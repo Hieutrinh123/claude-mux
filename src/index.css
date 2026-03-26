@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0A0A0A;
+    color: #FAFAFA;
+    font-family: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
+    overflow: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Let text be selectable inside terminal and diff */
+  .selectable { user-select: text; }
+}
+
+@layer utilities {
+  .titlebar-drag    { -webkit-app-region: drag; }
+  .titlebar-nodrag  { -webkit-app-region: no-drag; }
+  .scrollbar-hidden { scrollbar-width: none; }
+  .scrollbar-hidden::-webkit-scrollbar { display: none; }
+}
+
+/* Override xterm.js default white background */
+.xterm { background: #0A0A0A !important; }
+.xterm-viewport { background: #0A0A0A !important; }
