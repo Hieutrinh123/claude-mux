@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "node -e \"try{require('child_process').execSync('taskkill /F /IM electron.exe',{stdio:'pipe'})}catch(e){}\" && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
     "rebuild": "electron-rebuild -f -w node-pty"
   },

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useReducer } from 'react'
+import { useEffect, useRef, useState, useCallback, useReducer, useMemo } from 'react'
 import type { AppScreen, Workspace, Session, AppSettings } from './types'
 import { loadWorkspaces, saveWorkspaces, loadSettings, saveSettings, nextWorkspaceColor } from './storage'
 import TerminalPane from './components/TerminalPane'
@@ -10,7 +10,10 @@ import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
 
-type GitCommit = { hash: string; fullHash: string; message: string; date: string }
+type GitCommit = {
+  hash: string; fullHash: string; parents: string[]
+  refs: string[]; message: string; date: string; isoDate: string; author: string
+}
 type FileDiff  = { patch: string; added: number; removed: number }
 type GitData   = {
   files:     { path: string; status: string }[]
@@ -19,6 +22,146 @@ type GitData   = {
 }
 
 type Selection = { kind: 'commit'; hash: string; fullHash: string }
+
+// ── Git graph layout ──────────────────────────────────────────────────────────
+
+const LANE_COLORS = [
+  '#3B82F6','#A855F7','#F59E0B','#10B981',
+  '#EF4444','#06B6D4','#F97316','#EC4899',
+]
+const LANE_W = 12
+const ROW_H  = 26
+const DOT_R  = 3.5
+
+type ComputedRow = GitCommit & {
+  laneIndex:   number
+  color:       string
+  topLanes:    (string | null)[]
+  bottomLanes: (string | null)[]
+  extraEdges:  { toLane: number }[]   // dot → bottom of toLane (merge-into)
+}
+
+function computeGraph(commits: GitCommit[]): ComputedRow[] {
+  const lanes: (string | null)[] = []
+
+  return commits.map((commit) => {
+    const topLanes  = [...lanes]
+    const extraEdges: { toLane: number }[] = []
+
+    // Assign a lane to this commit
+    let laneIndex = lanes.indexOf(commit.fullHash)
+    if (laneIndex === -1) {
+      const free = lanes.indexOf(null)
+      laneIndex = free !== -1 ? free : lanes.length
+      if (laneIndex === lanes.length) lanes.push(null)
+    }
+
+    const parents = commit.parents
+    if (parents.length === 0) {
+      lanes[laneIndex] = null
+    } else {
+      // First parent
+      const taken = lanes.findIndex((l, i) => l === parents[0] && i !== laneIndex)
+      if (taken !== -1) {
+        lanes[laneIndex] = null
+        extraEdges.push({ toLane: taken })
+      } else {
+        lanes[laneIndex] = parents[0]
+      }
+      // Additional parents → open new lanes (shows as branch-out in SVG)
+      for (let p = 1; p < parents.length; p++) {
+        if (!lanes.includes(parents[p])) {
+          const free = lanes.indexOf(null)
+          if (free !== -1) lanes[free] = parents[p]
+          else lanes.push(parents[p])
+        }
+      }
+    }
+    while (lanes.length > 0 && lanes[lanes.length - 1] === null) lanes.pop()
+
+    return {
+      ...commit,
+      laneIndex,
+      color: LANE_COLORS[laneIndex % LANE_COLORS.length],
+      topLanes,
+      bottomLanes: [...lanes],
+      extraEdges,
+    }
+  })
+}
+
+function GraphSvg({ row }: { row: ComputedRow }) {
+  const numLanes = Math.max(row.laneIndex + 1, row.topLanes.length, row.bottomLanes.length)
+  const svgW = numLanes * LANE_W + 2
+  const cx   = row.laneIndex * LANE_W + LANE_W / 2
+  const cy   = ROW_H / 2
+  const maxI = Math.max(row.topLanes.length, row.bottomLanes.length)
+  const els: React.ReactNode[] = []
+
+  // Non-commit lanes
+  for (let i = 0; i < maxI; i++) {
+    if (i === row.laneIndex) continue
+    const x      = i * LANE_W + LANE_W / 2
+    const inTop  = i < row.topLanes.length    && row.topLanes[i]    !== null
+    const inBot  = i < row.bottomLanes.length && row.bottomLanes[i] !== null
+    const color  = LANE_COLORS[i % LANE_COLORS.length]
+
+    if (inTop && inBot) {
+      els.push(<line key={`v${i}`} x1={x} y1={0} x2={x} y2={ROW_H} stroke={color} strokeWidth={1.5} />)
+    } else if (inTop) {
+      // Lane merging into this commit from above
+      els.push(<path key={`mi${i}`} d={`M ${x} 0 C ${x} ${cy} ${cx} 0 ${cx} ${cy}`}
+        fill="none" stroke={color} strokeWidth={1.5} />)
+    } else if (inBot) {
+      // New lane branching out from this commit downward
+      els.push(<path key={`bo${i}`} d={`M ${cx} ${cy} C ${cx} ${ROW_H} ${x} ${cy} ${x} ${ROW_H}`}
+        fill="none" stroke={color} strokeWidth={1.5} />)
+    }
+  }
+
+  // Extra edges: commit merges into another lane below
+  for (const edge of row.extraEdges) {
+    const tx = edge.toLane * LANE_W + LANE_W / 2
+    els.push(<path key={`ex${edge.toLane}`} d={`M ${cx} ${cy} C ${cx} ${ROW_H} ${tx} ${cy} ${tx} ${ROW_H}`}
+      fill="none" stroke={row.color} strokeWidth={1.5} />)
+  }
+
+  // Commit lane half-lines
+  if (row.topLanes[row.laneIndex] === row.fullHash)
+    els.push(<line key="lt" x1={cx} y1={0}  x2={cx} y2={cy}     stroke={row.color} strokeWidth={1.5} />)
+  if (row.laneIndex < row.bottomLanes.length && row.bottomLanes[row.laneIndex] !== null)
+    els.push(<line key="lb" x1={cx} y1={cy} x2={cx} y2={ROW_H}  stroke={row.color} strokeWidth={1.5} />)
+
+  // Dot on top
+  els.push(<circle key="dot" cx={cx} cy={cy} r={DOT_R} fill={row.color} stroke="#0A0A0A" strokeWidth={1} />)
+
+  return <svg width={svgW} height={ROW_H} style={{ display: 'block', flexShrink: 0 }}>{els}</svg>
+}
+
+function RefBadge({ label }: { label: string }) {
+  const isHead   = label === 'HEAD'
+  const isTag    = label.startsWith('tag:')
+  const isRemote = !isHead && !isTag && (label.includes('/'))
+  const text     = isTag ? label.slice(5) : label
+  const cls = isHead
+    ? 'bg-[#064E3B] text-[#34D399] border-[#065F46]'
+    : isTag
+    ? 'bg-[#451A03] text-[#FCD34D] border-[#78350F]'
+    : isRemote
+    ? 'bg-[#1E1B4B] text-[#818CF8] border-[#312E81]'
+    : 'bg-[#0C1A2E] text-[#60A5FA] border-[#1E3A5F]'
+  return (
+    <span className={`inline-flex items-center px-[3px] py-[1px] rounded-[2px] text-[8px] font-mono flex-shrink-0 border ${cls}`}>
+      {text}
+    </span>
+  )
+}
+
+function formatAbsDate(iso: string) {
+  if (!iso) return ''
+  try { return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) }
+  catch { return iso }
+}
 
 function DiffContent({ patch }: { patch: string }) {
   let oldLine = 0, newLine = 0
@@ -68,6 +211,7 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [tab, setTab]             = useState<'git_tree' | 'diff'>('diff')
   const [tick, refresh]           = useReducer((n: number) => n + 1, 0)
+  const [tooltip, setTooltip]     = useState<{ row: ComputedRow; x: number; y: number } | null>(null)
 
   useEffect(() => {
     if (!cwd) return
@@ -94,6 +238,8 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
       setActiveFile(null)
     }
   }, [git.fileDiffs])
+
+  const rows = useMemo(() => computeGraph(git.commits), [git.commits])
 
   const selectedKey = selection?.hash ?? null
   const fileKeys    = Object.keys(git.fileDiffs)
@@ -151,24 +297,62 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
         })}
       </div>
 
-      {/* git_tree tab: commit history only */}
+      {/* git_tree tab: visual branch graph */}
       {tab === 'git_tree' && (
-        <div className="flex-1 overflow-auto scrollbar-hidden">
-          {git.commits.length === 0 ? (
+        <div
+          className="flex-1 overflow-auto scrollbar-hidden"
+          onMouseLeave={() => setTooltip(null)}
+        >
+          {rows.length === 0 ? (
             <div className="px-3 py-3 text-[11px] text-tm-dim">no commits</div>
-          ) : git.commits.map((c) => (
+          ) : rows.map((row) => {
+            const isSelected = selectedKey === row.hash
+            return (
+              <div
+                key={row.hash}
+                style={{ height: ROW_H }}
+                onClick={() => setSelection({ kind: 'commit', hash: row.hash, fullHash: row.fullHash })}
+                onMouseEnter={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setTooltip({ row, x: rect.left + 4, y: rect.bottom })
+                }}
+                onMouseLeave={() => setTooltip(null)}
+                className={`flex items-center cursor-pointer hover:bg-tm-surface ${isSelected ? 'bg-[#0D1C0D]' : ''}`}
+              >
+                {/* Branch graph */}
+                <GraphSvg row={row} />
+
+                {/* Metadata */}
+                <div className="flex items-center gap-[5px] px-[6px] min-w-0 flex-1 overflow-hidden">
+                  <span className="text-[10px] font-mono text-tm-cyan flex-shrink-0">{row.hash}</span>
+                  {row.refs.slice(0, 2).map(r => <RefBadge key={r} label={r} />)}
+                  <span className="text-[10px] text-tm-muted truncate flex-1 min-w-0">{row.message}</span>
+                  <span className="text-[9px] text-tm-dim flex-shrink-0 whitespace-nowrap">{row.date}</span>
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Hover tooltip */}
+          {tooltip && (
             <div
-              key={c.hash}
-              onClick={() => setSelection({ kind: 'commit', hash: c.hash, fullHash: c.fullHash })}
-              className={`flex items-center gap-2 px-3 py-[4px] cursor-pointer hover:bg-tm-surface ${
-                selectedKey === c.hash ? 'bg-tm-surface' : ''
-              }`}
+              className="fixed z-50 pointer-events-none"
+              style={{
+                left: Math.min(tooltip.x, window.innerWidth - 300),
+                top:  tooltip.y + 6 + 130 > window.innerHeight ? tooltip.y - 134 : tooltip.y + 6,
+              }}
             >
-              <span className="text-[10px] font-mono text-tm-cyan flex-shrink-0 w-[42px]">{c.hash}</span>
-              <span className="text-[11px] text-tm-text truncate flex-1">{c.message}</span>
-              <span className="text-[9px] text-tm-dim flex-shrink-0 ml-1">{c.date}</span>
+              <div className="bg-[#141414] border border-[#2D2D2D] rounded shadow-2xl p-3 w-[288px]">
+                <div className="font-mono text-[10px] text-[#22D3EE] mb-[6px] break-all">{tooltip.row.fullHash}</div>
+                <div className="text-[11px] text-[#E5E5E5] leading-snug mb-2">{tooltip.row.message}</div>
+                <div className="flex items-center gap-2 flex-wrap mb-[4px]">
+                  {tooltip.row.refs.map(r => <RefBadge key={r} label={r} />)}
+                </div>
+                <div className="text-[10px] text-[#6B7280]">{tooltip.row.author}</div>
+                <div className="text-[10px] text-[#4B5563] mt-[2px]">{formatAbsDate(tooltip.row.isoDate)}</div>
+              </div>
             </div>
-          ))}
+          )}
         </div>
       )}
 

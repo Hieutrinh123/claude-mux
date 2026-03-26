@@ -141,13 +141,26 @@ ipcMain.handle('git:status', async (_e, { cwd, commitHash }) => {
   })
 
   // Recent commits — use SEP as field delimiter, \n as record delimiter
-  const logOut = await git(['log', `--format=%H${SEP}%s${SEP}%ar`, '--max-count=40'])
+  const logOut = await git(['log', '--all', '--topo-order', `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%ar${SEP}%aI${SEP}%an`, '--max-count=80'])
   const commits = logOut.trim().split('\n').filter(Boolean).map((line) => {
     const parts = line.split(SEP)
-    const hash = parts[0] || ''
-    const message = parts[1] || ''
-    const date = parts[2] || ''
-    return { hash: hash.slice(0, 7), fullHash: hash, message, date }
+    const hash     = parts[0] || ''
+    const parentsStr = parts[1] || ''
+    const decoStr  = parts[2] || ''
+    const message  = parts[3] || ''
+    const date     = parts[4] || ''
+    const isoDate  = parts[5] || ''
+    const author   = parts[6] || ''
+    const parents  = parentsStr.trim().split(' ').filter(Boolean)
+    const refs = []
+    if (decoStr) {
+      for (const part of decoStr.split(', ')) {
+        const t = part.trim()
+        if (t.startsWith('HEAD -> ')) { refs.push('HEAD', t.slice(8)) }
+        else if (t) { refs.push(t) }
+      }
+    }
+    return { hash: hash.slice(0, 7), fullHash: hash, parents, refs, message, date, isoDate, author }
   })
 
   // Parse a multi-file diff into { [filepath]: { patch, added, removed } }

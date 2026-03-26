@@ -11,7 +11,7 @@ interface Window {
     openFolder:  () => Promise<string | null>
     gitStatus:   (cwd: string, file?: string, commitHash?: string) => Promise<{
       files:     { path: string; status: string }[]
-      commits:   { hash: string; fullHash: string; message: string; date: string }[]
+      commits:   { hash: string; fullHash: string; parents: string[]; refs: string[]; message: string; date: string; isoDate: string; author: string }[]
       fileDiffs: Record<string, { patch: string; added: number; removed: number }>
     }>
   }
