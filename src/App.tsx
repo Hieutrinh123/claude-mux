@@ -163,7 +163,13 @@ function formatAbsDate(iso: string) {
   catch { return iso }
 }
 
-function DiffContent({ patch }: { patch: string }) {
+type LineTooltip = { text: string; color: string; x: number; y: number }
+
+function DiffContent({ patch, onLineEnter, onLineLeave }: {
+  patch: string
+  onLineEnter: (e: React.MouseEvent<HTMLDivElement>, text: string, color: string) => void
+  onLineLeave: () => void
+}) {
   let oldLine = 0, newLine = 0
   return (
     <>
@@ -186,18 +192,25 @@ function DiffContent({ patch }: { patch: string }) {
           else if (isRem) oldLine++
           else { oldLine++; newLine++ }
         }
+        const textColor = isRem ? '#FF8888' : isAdd ? '#4DFFC4' : isNoNl ? '#2A2A2A' : '#3A3A3A'
         return (
-          <div key={i} className={`flex items-center font-mono text-[10px] whitespace-pre leading-[18px] ${
-            isRem ? 'border-l-[3px] border-[#FF3333] bg-[#250808]' :
-            isAdd ? 'border-l-[3px] border-[#00FF88] bg-[#082012]' :
-                    'border-l-[3px] border-transparent'
-          }`}>
+          <div
+            key={i}
+            className={`flex items-center font-mono text-[10px] whitespace-pre leading-[18px] overflow-hidden ${
+              isRem ? 'border-l-[3px] border-[#FF3333] bg-[#250808]' :
+              isAdd ? 'border-l-[3px] border-[#00FF88] bg-[#082012]' :
+                      'border-l-[3px] border-transparent'
+            }`}
+            onMouseEnter={(e) => {
+              if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth)
+                onLineEnter(e, line, textColor)
+            }}
+            onMouseLeave={onLineLeave}
+          >
             <span className={`w-[26px] text-right pr-[4px] flex-shrink-0 select-none text-[9px] ${
               isRem ? 'text-[#3D1515]' : isAdd ? 'text-[#153A20]' : 'text-[#1E1E1E]'
             }`}>{isNoNl ? '' : dispNum}</span>
-            <span className={
-              isRem ? 'text-[#FF8888]' : isAdd ? 'text-[#4DFFC4]' : isNoNl ? 'text-[#2A2A2A]' : 'text-[#3A3A3A]'
-            }>{line || ' '}</span>
+            <span style={{ color: textColor }}>{line || ' '}</span>
           </div>
         )
       })}
@@ -211,7 +224,8 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [tab, setTab]             = useState<'git_tree' | 'diff'>('diff')
   const [tick, refresh]           = useReducer((n: number) => n + 1, 0)
-  const [tooltip, setTooltip]     = useState<{ row: ComputedRow; x: number; y: number } | null>(null)
+  const [tooltip, setTooltip]         = useState<{ row: ComputedRow; x: number; y: number } | null>(null)
+  const [lineTooltip, setLineTooltip] = useState<LineTooltip | null>(null)
 
   useEffect(() => {
     if (!cwd) return
@@ -388,9 +402,36 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
             {!currentDiff?.patch ? (
               <div className="px-3 py-3 text-[11px] text-tm-dim">no diff</div>
             ) : (
-              <DiffContent patch={currentDiff.patch} />
+              <DiffContent
+                patch={currentDiff.patch}
+                onLineEnter={(e, text, color) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setLineTooltip({ text, color, x: rect.left, y: rect.bottom })
+                }}
+                onLineLeave={() => setLineTooltip(null)}
+              />
             )}
           </div>
+
+          {/* Long-line hover popup */}
+          {lineTooltip && (
+            <div
+              className="fixed z-50 pointer-events-none"
+              style={{
+                left: Math.min(lineTooltip.x, window.innerWidth - 500),
+                top:  lineTooltip.y + 4,
+              }}
+            >
+              <div className="bg-[#141414] border border-[#2D2D2D] rounded shadow-2xl px-3 py-2 max-w-[480px]">
+                <pre
+                  className="font-mono text-[10px] whitespace-pre-wrap break-all"
+                  style={{ color: lineTooltip.color }}
+                >
+                  {lineTooltip.text}
+                </pre>
+              </div>
+            </div>
+          )}
         </>
       )}
 
