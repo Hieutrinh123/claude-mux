@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, useReducer } from 'react'
 import type { AppScreen, Workspace, Session, AppSettings } from './types'
 import { loadWorkspaces, saveWorkspaces, loadSettings, saveSettings, nextWorkspaceColor } from './storage'
 import TerminalPane from './components/TerminalPane'
@@ -8,30 +8,97 @@ import NewWorkspaceModal from './modals/NewWorkspaceModal'
 import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 
-// ── Mock diff data (right panel) ──────────────────────────────────────────────
-
-const MOCK_DIFF = {
-  gitFiles: [
-    { path: 'src/auth/middleware.ts', status: 'M' as const },
-    { path: 'src/auth/tokens.ts',     status: 'A' as const },
-    { path: 'src/auth/sessions.ts',   status: 'D' as const },
-    { path: 'src/index.ts',           status: 'M' as const },
-  ],
-  patch: `@@ -12,8 +12,10 @@
-  const app = express()
-- app.use(session({ secret: key }))
-- app.use(sessionParser)
-+ const token = jwt.sign(payload, secret)
-+ app.use(verifyJwtToken)
-  app.listen(PORT)`,
-  file: 'src/auth/middleware.ts',
-  added: 2,
-  removed: 2,
-}
-
 // ── RightPanel ────────────────────────────────────────────────────────────────
 
-function RightPanel({ state, onToggle }: { state: 'open' | 'collapsed'; onToggle: () => void }) {
+type GitCommit = { hash: string; fullHash: string; message: string; date: string }
+type FileDiff  = { patch: string; added: number; removed: number }
+type GitData   = {
+  files:     { path: string; status: string }[]
+  commits:   GitCommit[]
+  fileDiffs: Record<string, FileDiff>
+}
+
+type Selection = { kind: 'commit'; hash: string; fullHash: string }
+
+function DiffContent({ patch }: { patch: string }) {
+  let oldLine = 0, newLine = 0
+  return (
+    <>
+      {patch.split('\n').map((line, i) => {
+        if (line.startsWith('@@')) {
+          const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+          if (m) { oldLine = parseInt(m[1]); newLine = parseInt(m[2]) }
+          return (
+            <div key={i} className="px-2 py-[1px] bg-[#0A1625] font-mono text-[9px] text-[#1E6A8A] whitespace-pre">
+              {line}
+            </div>
+          )
+        }
+        const isAdd  = line.startsWith('+')
+        const isRem  = line.startsWith('-')
+        const isNoNl = line.startsWith('\\')
+        const dispNum = isRem ? oldLine : newLine
+        if (!isNoNl) {
+          if (isAdd) newLine++
+          else if (isRem) oldLine++
+          else { oldLine++; newLine++ }
+        }
+        return (
+          <div key={i} className={`flex items-center font-mono text-[10px] whitespace-pre leading-[18px] ${
+            isRem ? 'border-l-[3px] border-[#FF3333] bg-[#250808]' :
+            isAdd ? 'border-l-[3px] border-[#00FF88] bg-[#082012]' :
+                    'border-l-[3px] border-transparent'
+          }`}>
+            <span className={`w-[26px] text-right pr-[4px] flex-shrink-0 select-none text-[9px] ${
+              isRem ? 'text-[#3D1515]' : isAdd ? 'text-[#153A20]' : 'text-[#1E1E1E]'
+            }`}>{isNoNl ? '' : dispNum}</span>
+            <span className={
+              isRem ? 'text-[#FF8888]' : isAdd ? 'text-[#4DFFC4]' : isNoNl ? 'text-[#2A2A2A]' : 'text-[#3A3A3A]'
+            }>{line || ' '}</span>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onToggle: () => void; cwd: string | null }) {
+  const [git, setGit]             = useState<GitData>({ files: [], commits: [], fileDiffs: {} })
+  const [selection, setSelection] = useState<Selection | null>(null)
+  const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [tab, setTab]             = useState<'git_tree' | 'diff'>('diff')
+  const [tick, refresh]           = useReducer((n: number) => n + 1, 0)
+
+  useEffect(() => {
+    if (!cwd) return
+    let cancelled = false
+    window.api.gitStatus(cwd, undefined, selection?.fullHash).then((data: GitData) => {
+      if (!cancelled) setGit(data)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [cwd, selection, tick])
+
+  useEffect(() => {
+    const id = setInterval(refresh, 4000)
+    return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => { setSelection(null); setActiveFile(null) }, [cwd])
+
+  // Auto-select first file; keep selection if it still exists
+  useEffect(() => {
+    const keys = Object.keys(git.fileDiffs)
+    if (keys.length > 0) {
+      setActiveFile(prev => (!prev || !git.fileDiffs[prev]) ? keys[0] : prev)
+    } else {
+      setActiveFile(null)
+    }
+  }, [git.fileDiffs])
+
+  const selectedKey = selection?.hash ?? null
+  const fileKeys    = Object.keys(git.fileDiffs)
+  const currentDiff = activeFile ? git.fileDiffs[activeFile] : null
+
   if (state === 'collapsed') {
     return (
       <div
@@ -50,54 +117,99 @@ function RightPanel({ state, onToggle }: { state: 'open' | 'collapsed'; onToggle
             <span key={c} className="text-[9px] text-tm-dim leading-none">{c}</span>
           ))}
         </div>
-        <div className="w-[6px] h-[6px] rounded-full bg-tm-amber" />
+        <div className="w-[6px] h-[6px] rounded-full bg-tm-cyan" />
       </div>
     )
   }
 
   return (
     <div className="flex-shrink-0 flex flex-col border-l border-tm-border bg-tm-bg" style={{ width: 320 }}>
+
+      {/* Header */}
       <div className="flex items-center px-3 h-8 border-b border-tm-border bg-tm-surface flex-shrink-0">
-        <span className="text-[11px] font-bold text-tm-text flex-1">// git_tree</span>
+        <span className="text-[11px] font-bold text-tm-green flex-1">// git_panel</span>
         <button onClick={onToggle} className="text-[10px] text-tm-dim hover:text-tm-muted">[collapse]</button>
       </div>
-      <div className="flex flex-col py-1 border-b border-tm-border">
-        {MOCK_DIFF.gitFiles.map((f) => (
-          <div key={f.path} className="flex items-center gap-2 px-3 py-[5px] hover:bg-tm-surface">
-            <span className={`text-[11px] font-bold w-3 flex-shrink-0 ${
-              f.status === 'M' ? 'text-tm-amber' : f.status === 'A' ? 'text-tm-green' : 'text-tm-red'
-            }`}>{f.status}</span>
-            <span className="text-[11px] text-tm-text truncate">{f.path}</span>
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center gap-2 px-3 h-8 border-b border-tm-border bg-tm-surface flex-shrink-0">
-        <span className="text-[11px] font-bold text-tm-text">// diff</span>
-        <span className="text-[10px] text-tm-dim border border-tm-border px-[6px] py-[1px]">
-          {MOCK_DIFF.file.split('/').pop()}
-        </span>
-      </div>
-      <div className="flex-1 overflow-auto scrollbar-hidden selectable">
-        {MOCK_DIFF.patch.split('\n').map((line, i) => {
-          const isAdd  = line.startsWith('+') && !line.startsWith('+++')
-          const isRem  = line.startsWith('-') && !line.startsWith('---')
-          const isHunk = line.startsWith('@@')
+
+      {/* Tab row */}
+      <div className="flex items-center flex-shrink-0 border-b border-tm-border bg-[#0D0D0D]" style={{ height: 32 }}>
+        {(['git_tree', 'diff'] as const).map((t) => {
+          const isActive = tab === t
           return (
-            <div key={i} className={`px-3 py-[2px] font-mono text-[11px] whitespace-pre ${
-              isAdd ? 'bg-[#001a0a] text-tm-green' : isRem ? 'bg-[#1a0a00] text-tm-amber' : isHunk ? 'text-tm-cyan' : 'text-tm-dim'
-            }`}>{line || ' '}</div>
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`flex items-center h-full px-[14px] text-[10px] font-mono border-b-2 transition-none ${
+                isActive
+                  ? 'text-tm-green font-bold bg-[#071209] border-tm-green'
+                  : 'text-[#3A3A3A] border-transparent hover:text-tm-dim'
+              }`}
+            >
+              {isActive ? `[${t}]` : t}
+            </button>
           )
         })}
       </div>
-      <div className="flex items-center gap-2 px-3 h-10 border-t border-tm-border flex-shrink-0">
-        <button className="text-[11px] text-tm-green border border-tm-green px-3 py-[4px] hover:bg-[#001a0a]">
-          [y] accept all
-        </button>
-        <button className="text-[11px] text-tm-amber border border-tm-border px-3 py-[4px] hover:bg-[#1a0a00]">
-          [n] reject
-        </button>
-        <span className="ml-auto text-[10px] text-tm-dim">+{MOCK_DIFF.added} -{MOCK_DIFF.removed}</span>
-      </div>
+
+      {/* git_tree tab: commit history only */}
+      {tab === 'git_tree' && (
+        <div className="flex-1 overflow-auto scrollbar-hidden">
+          {git.commits.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-tm-dim">no commits</div>
+          ) : git.commits.map((c) => (
+            <div
+              key={c.hash}
+              onClick={() => setSelection({ kind: 'commit', hash: c.hash, fullHash: c.fullHash })}
+              className={`flex items-center gap-2 px-3 py-[4px] cursor-pointer hover:bg-tm-surface ${
+                selectedKey === c.hash ? 'bg-tm-surface' : ''
+              }`}
+            >
+              <span className="text-[10px] font-mono text-tm-cyan flex-shrink-0 w-[42px]">{c.hash}</span>
+              <span className="text-[11px] text-tm-text truncate flex-1">{c.message}</span>
+              <span className="text-[9px] text-tm-dim flex-shrink-0 ml-1">{c.date}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* diff tab: file selector + diff content */}
+      {tab === 'diff' && (
+        <>
+          {/* File selector strip */}
+          {fileKeys.length > 0 && (
+            <div className="flex flex-col border-b border-tm-border flex-shrink-0 overflow-auto scrollbar-hidden" style={{ maxHeight: 140 }}>
+              {fileKeys.map((fp) => {
+                const d = git.fileDiffs[fp]
+                const isActive = fp === activeFile
+                const label = fp.split('/').slice(-2).join('/')
+                return (
+                  <div
+                    key={fp}
+                    title={fp}
+                    onClick={() => setActiveFile(fp)}
+                    className={`flex items-center gap-2 px-3 py-[5px] cursor-pointer hover:bg-tm-surface font-mono text-[10px] ${
+                      isActive ? 'border-l-[2px] border-tm-green bg-[#0C180C]' : 'border-l-[2px] border-transparent'
+                    }`}
+                  >
+                    <span className={`truncate flex-1 ${isActive ? 'text-tm-text' : 'text-tm-dim'}`}>{label}</span>
+                    <span className="text-[9px] text-tm-green flex-shrink-0">+{d.added}</span>
+                    <span className="text-[9px] text-[#FF6666] flex-shrink-0">−{d.removed}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {/* Diff content */}
+          <div className="flex-1 overflow-auto scrollbar-hidden selectable">
+            {!currentDiff?.patch ? (
+              <div className="px-3 py-3 text-[11px] text-tm-dim">no diff</div>
+            ) : (
+              <DiffContent patch={currentDiff.patch} />
+            )}
+          </div>
+        </>
+      )}
+
     </div>
   )
 }
@@ -113,13 +225,16 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [expandedWs, setExpandedWs]   = useState<Set<string>>(new Set())
   const [panelState, setPanelState]   = useState<'open' | 'collapsed'>('open')
-  const [mode, setMode]               = useState<'ASK' | 'PLAN' | 'EDIT'>('ASK')
-  const [showModelPicker, setShowModelPicker]     = useState(false)
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
-  const spawnedSessions = useRef<Set<string>>(new Set())
-  const nextSessionNum  = useRef(1)
-  const modelBtnRef     = useRef<HTMLButtonElement>(null)
+  const spawnedSessions  = useRef<Set<string>>(new Set())
+  const wsSessionNums    = useRef<Map<string, number>>(new Map())
+
+  function nextNumForWs(wsId: string): number {
+    const n = (wsSessionNums.current.get(wsId) ?? 0) + 1
+    wsSessionNums.current.set(wsId, n)
+    return n
+  }
 
   // ── Startup: detect CLI then load workspaces ────────────────────────────────
   useEffect(() => {
@@ -159,10 +274,11 @@ export default function App() {
     setActiveWsId(ws.id)
     setExpandedWs(new Set([ws.id]))
     // Auto-create a session
+    const n = nextNumForWs(ws.id)
     const session: Session = {
-      id:          `${ws.id}-s${nextSessionNum.current++}`,
+      id:          `${ws.id}-s${n}`,
       workspaceId: ws.id,
-      name:        `session_${nextSessionNum.current - 1}`,
+      name:        `session_${n}`,
       model:       settings.defaultModel,
     }
     setSessions((prev) => [...prev, session])
@@ -183,14 +299,28 @@ export default function App() {
   }
 
   // ── Sessions ───────────────────────────────────────────────────────────────
+  // pendingSpawn holds sessions waiting for terminal dims before spawning
+  const pendingSpawn = useRef<Map<string, { session: Session; workspace: Workspace }>>(new Map())
+
   const spawnSession = useCallback((session: Session, workspace: Workspace) => {
     if (spawnedSessions.current.has(session.id)) return
-    spawnedSessions.current.add(session.id)
+    // Queue the spawn — TerminalPane will call handleTerminalReady with real dims
+    pendingSpawn.current.set(session.id, { session, workspace })
+  }, [])
+
+  const handleTerminalReady = useCallback((sessionId: string, cols: number, rows: number) => {
+    const pending = pendingSpawn.current.get(sessionId)
+    if (!pending) return
+    pendingSpawn.current.delete(sessionId)
+    if (spawnedSessions.current.has(sessionId)) return
+    spawnedSessions.current.add(sessionId)
     window.api.ptySpawn({
-      sessionId:       session.id,
-      cwd:             workspace.path,
-      model:           session.model,
+      sessionId,
+      cwd:             pending.workspace.path,
+      model:           pending.session.model,
       skipPermissions: settings.skipPermissions,
+      cols,
+      rows,
     })
   }, [settings.skipPermissions])
 
@@ -203,10 +333,11 @@ export default function App() {
     })
     const wsSessions = sessions.filter((s) => s.workspaceId === ws.id)
     if (wsSessions.length === 0) {
+      const n = nextNumForWs(ws.id)
       const session: Session = {
-        id:          `${ws.id}-s${nextSessionNum.current++}`,
+        id:          `${ws.id}-s${n}`,
         workspaceId: ws.id,
-        name:        `session_${nextSessionNum.current - 1}`,
+        name:        `session_${n}`,
         model:       settings.defaultModel,
       }
       setSessions((prev) => [...prev, session])
@@ -230,10 +361,11 @@ export default function App() {
   function handleNewSession(wsId: string) {
     const ws = workspaces.find((w) => w.id === wsId)
     if (!ws) return
+    const n = nextNumForWs(wsId)
     const session: Session = {
-      id:          `${wsId}-s${nextSessionNum.current++}`,
+      id:          `${wsId}-s${n}`,
       workspaceId: wsId,
-      name:        `session_${nextSessionNum.current - 1}`,
+      name:        `session_${n}`,
       model:       settings.defaultModel,
     }
     setSessions((prev) => [...prev, session])
@@ -242,18 +374,25 @@ export default function App() {
     spawnSession(session, ws)
   }
 
-  function handleModeClick(m: 'ASK' | 'PLAN' | 'EDIT') {
-    setMode(m)
-    if (!activeSessionId) return
-    if (m === 'PLAN') window.api.ptyWrite(activeSessionId, '/plan ')
-    document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
+  function handleDeleteSession(sessionId: string) {
+    window.api.ptyKill(sessionId)
+    spawnedSessions.current.delete(sessionId)
+    pendingSpawn.current.delete(sessionId)
+    setSessions((prev) => {
+      const next = prev.filter((s) => s.id !== sessionId)
+      if (activeSessionId === sessionId) {
+        const ws = workspaces.find((w) => w.id === prev.find((s) => s.id === sessionId)?.workspaceId)
+        const remaining = next.filter((s) => s.workspaceId === ws?.id)
+        setActiveSessionId(remaining[remaining.length - 1]?.id ?? null)
+      }
+      return next
+    })
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const activeWs      = workspaces.find((w) => w.id === activeWsId) ?? null
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null
   const wsSessions    = (wsId: string) => sessions.filter((s) => s.workspaceId === wsId)
-  const activeModel   = settings.defaultModel.replace('claude-', '').replace('-4-5', '-4')
   const deleteWs      = workspaces.find((w) => w.id === deleteWsId) ?? null
 
   // ── Screen routing ─────────────────────────────────────────────────────────
@@ -311,32 +450,6 @@ export default function App() {
           )}
         </div>
 
-        <div className="flex items-center gap-3 titlebar-nodrag flex-shrink-0">
-          <button
-            onClick={() => setScreen('settings')}
-            className="text-[10px] text-tm-dim hover:text-tm-muted"
-          >
-            settings
-          </button>
-
-          {/* Model picker anchor */}
-          <div className="relative">
-            <button
-              ref={modelBtnRef}
-              onClick={() => setShowModelPicker((v) => !v)}
-              className="border border-tm-border px-2 py-[2px] text-[10px] text-tm-muted hover:border-tm-muted hover:text-tm-text"
-            >
-              {activeModel} ▾
-            </button>
-            {showModelPicker && (
-              <ModelPicker
-                current={settings.defaultModel}
-                onSelect={(m) => handleSaveSettings({ ...settings, defaultModel: m })}
-                onClose={() => setShowModelPicker(false)}
-              />
-            )}
-          </div>
-        </div>
       </div>
 
       {/* ── Body ──────────────────────────────────────────────────────────── */}
@@ -380,12 +493,17 @@ export default function App() {
                       {wss.map((s) => (
                         <div
                           key={s.id}
-                          className={`flex items-center px-[22px] py-[4px] cursor-pointer text-[11px] hover:bg-tm-surface ${
+                          className={`group flex items-center px-[22px] py-[4px] cursor-pointer text-[11px] hover:bg-tm-surface ${
                             s.id === activeSessionId ? 'text-tm-green' : 'text-tm-dim'
                           }`}
                           onClick={() => handleSelectSession(s)}
                         >
-                          $ {s.name}
+                          <span className="flex-1">$ {s.name}</span>
+                          <button
+                            className="opacity-0 group-hover:opacity-100 text-[10px] hover:text-tm-red pr-1 flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id) }}
+                            title="Delete session"
+                          >×</button>
                         </div>
                       ))}
                       <button
@@ -441,48 +559,19 @@ export default function App() {
             )}
           </div>
 
-          <TerminalPane sessionId={activeSessionId} />
+          <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
         </div>
 
         {/* ── Right panel ───────────────────────────────────────────────────── */}
         <RightPanel
           state={panelState}
           onToggle={() => setPanelState((p) => p === 'open' ? 'collapsed' : 'open')}
+          cwd={activeWs?.path ?? null}
         />
       </div>
 
-      {/* ── Status bar ────────────────────────────────────────────────────── */}
-      <div className="flex items-center h-6 px-4 gap-0 flex-shrink-0 bg-tm-surface border-t border-tm-border text-[10px]">
-        {/* Mode tag */}
-        <div className="flex items-center gap-0">
-          {(['ASK', 'PLAN', 'EDIT'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => handleModeClick(m)}
-              className={`px-2 py-0 text-[9px] font-bold ${
-                mode === m
-                  ? 'text-tm-bg bg-tm-green'
-                  : 'text-tm-dim hover:text-tm-muted'
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
 
-        {activeWs && (
-          <>
-            <span className="mx-3 text-tm-border">|</span>
-            <span className="text-tm-dim">{activeWs.name}</span>
-          </>
-        )}
-
-        <span className="ml-auto flex items-center gap-3 text-tm-dim">
-          <span>{activeModel}</span>
-        </span>
-      </div>
-
-      {/* ── Modals ────────────────────────────────────────────────────────── */}
+{/* ── Modals ────────────────────────────────────────────────────────── */}
       {showNewWorkspace && (
         <NewWorkspaceModal
           color={nextWorkspaceColor(workspaces.length)}

@@ -41,7 +41,7 @@ app.on('window-all-closed', () => {
 
 // ── PTY ───────────────────────────────────────────────────────────────────────
 
-ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions }) => {
+ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions, cols, rows }) => {
   if (ptySessions.has(sessionId)) return
 
   const env = { ...process.env }
@@ -62,8 +62,8 @@ ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions }) 
   try {
     proc = pty.spawn(file, args, {
       name: 'xterm-256color',
-      cols: 200,
-      rows: 50,
+      cols: cols || 120,
+      rows: rows || 40,
       cwd: cwd || os.homedir(),
       env,
       handleFlowControl: true,
@@ -77,12 +77,12 @@ ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions }) 
   ptySessions.set(sessionId, proc)
 
   proc.onData((data) => {
-    event.sender.send(`pty:data:${sessionId}`, data)
+    if (!event.sender.isDestroyed()) event.sender.send(`pty:data:${sessionId}`, data)
   })
 
   proc.onExit(({ exitCode }) => {
     ptySessions.delete(sessionId)
-    event.sender.send(`pty:exit:${sessionId}`, exitCode)
+    if (!event.sender.isDestroyed()) event.sender.send(`pty:exit:${sessionId}`, exitCode)
   })
 })
 
@@ -119,4 +119,88 @@ ipcMain.handle('claude:check', async () => {
 ipcMain.handle('dialog:open-folder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
   return result.canceled ? null : result.filePaths[0]
+})
+
+// ── Git status + diff ──────────────────────────────────────────────────────────
+
+ipcMain.handle('git:status', async (_e, { cwd, commitHash }) => {
+  const { execFile } = require('child_process')
+  const SEP = '\x1e' // ASCII record separator — safe in git output
+
+  const git = (args) => new Promise((resolve) => {
+    execFile('git', args, { cwd, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => resolve(err ? '' : stdout))
+  })
+
+  // Uncommitted changes
+  const statusOut = await git(['status', '--porcelain'])
+  const files = statusOut.trim().split('\n').filter(Boolean).map((line) => {
+    const xy = line.slice(0, 2)
+    const fpath = line.slice(3).trim()
+    const status = xy[0] !== ' ' && xy[0] !== '?' ? xy[0] : xy[1] !== ' ' ? xy[1] : '?'
+    return { path: fpath, status }
+  })
+
+  // Recent commits — use SEP as field delimiter, \n as record delimiter
+  const logOut = await git(['log', `--format=%H${SEP}%s${SEP}%ar`, '--max-count=40'])
+  const commits = logOut.trim().split('\n').filter(Boolean).map((line) => {
+    const parts = line.split(SEP)
+    const hash = parts[0] || ''
+    const message = parts[1] || ''
+    const date = parts[2] || ''
+    return { hash: hash.slice(0, 7), fullHash: hash, message, date }
+  })
+
+  // Parse a multi-file diff into { [filepath]: { patch, added, removed } }
+  function parseMultiFileDiff(raw) {
+    const result = {}
+    let currentFile = null
+    let inContent = false
+    let lines = [], added = 0, removed = 0
+
+    const flush = () => {
+      if (currentFile !== null) result[currentFile] = { patch: lines.join('\n'), added, removed }
+    }
+
+    for (const ln of raw.replace(/\r/g, '').split('\n')) {
+      if (ln.startsWith('diff --git ')) {
+        flush()
+        const m = ln.match(/diff --git a\/.+ b\/(.+)/)
+        currentFile = m ? m[1] : null
+        inContent = false
+        lines = []; added = 0; removed = 0
+      } else if (currentFile !== null) {
+        if (ln.startsWith('--- ') || ln.startsWith('+++ ') || ln.startsWith('index ') ||
+            ln.startsWith('Binary ') || ln.startsWith('new file') || ln.startsWith('deleted file')) {
+          continue
+        } else if (ln.startsWith('@@')) {
+          inContent = true
+          lines.push(ln)
+        } else if (inContent) {
+          lines.push(ln)
+          if (ln.startsWith('+')) added++
+          else if (ln.startsWith('-')) removed++
+        }
+      }
+    }
+    flush()
+    return result
+  }
+
+  let fileDiffs = {}
+
+  if (commitHash) {
+    const diffOut = await git(['show', commitHash, '--patch', '--no-color'])
+    fileDiffs = parseMultiFileDiff(diffOut)
+  } else if (files.length > 0) {
+    // Get all changed files at once
+    const diffOut = await git(['diff', 'HEAD'])
+    fileDiffs = parseMultiFileDiff(diffOut)
+    if (Object.keys(fileDiffs).length === 0) {
+      // May be all staged
+      const stagedOut = await git(['diff', '--cached'])
+      fileDiffs = parseMultiFileDiff(stagedOut)
+    }
+  }
+
+  return { files, commits, fileDiffs }
 })

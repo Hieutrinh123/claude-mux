@@ -17,8 +17,12 @@ export function clearBuffer(sid: string) {
   buffers.delete(sid)
 }
 
-export default function TerminalPane({ sessionId }: { sessionId: string | null }) {
+export default function TerminalPane({ sessionId, onReady }: {
+  sessionId: string | null
+  onReady?: (sessionId: string, cols: number, rows: number) => void
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const readyFired = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (!sessionId) return
@@ -28,11 +32,24 @@ export default function TerminalPane({ sessionId }: { sessionId: string | null }
     let userScrolledUp = false
     const pending: string[] = []
 
+    // For fresh sessions (no buffer yet), suppress scrollToBottom until the user
+    // types their first character. This prevents Claude Code's welcome-card escape
+    // sequences from scrolling the top border off-screen on Windows/ConPTY.
+    const isFreshSession = !buffers.has(sid) || buffers.get(sid)!.length === 0
+    let autoScrollEnabled = !isFreshSession
+
     const offData = window.api.onPtyData(sid, (data) => {
       appendBuf(sid, data)
       if (term) {
         term.write(data)
-        if (!userScrolledUp) requestAnimationFrame(() => term?.scrollToBottom())
+        if (autoScrollEnabled && !userScrolledUp) {
+          requestAnimationFrame(() => term?.scrollToBottom())
+        } else if (!autoScrollEnabled) {
+          // Fresh session: keep viewport at top so welcome card header stays visible.
+          // Mark as "user scrolled up" so ResizeObserver won't call scrollToBottom.
+          userScrolledUp = true
+          requestAnimationFrame(() => { if (!disposed && !autoScrollEnabled) term?.scrollToTop() })
+        }
       } else {
         pending.push(data)
       }
@@ -90,15 +107,26 @@ export default function TerminalPane({ sessionId }: { sessionId: string | null }
       for (const d of pending) t.write(d)
       pending.length = 0
 
-      requestAnimationFrame(() => {
+      // Wait for layout to fully settle before reporting dimensions to avoid
+      // spawning Claude Code at a narrower width than the final terminal size
+      // (which causes it to render the compact welcome card instead of the full one).
+      setTimeout(() => {
         if (disposed) return
         fa.fit()
         const dims = fa.proposeDimensions()
-        if (dims?.cols && dims?.rows) window.api.ptyResize(sid, dims.cols, dims.rows)
-      })
+        if (dims?.cols && dims?.rows) {
+          window.api.ptyResize(sid, dims.cols, dims.rows)
+          if (!readyFired.current.has(sid)) {
+            readyFired.current.add(sid)
+            onReady?.(sid, dims.cols, dims.rows)
+          }
+        }
+      }, 120)
 
       t.onData((data) => {
         if (isComposing && data.length > 1 && data.charCodeAt(0) >= 32) return
+        autoScrollEnabled = true
+        userScrolledUp = false  // re-enable auto-scroll to bottom once user starts typing
         window.api.ptyWrite(sid, data)
       })
 
@@ -175,7 +203,7 @@ export default function TerminalPane({ sessionId }: { sessionId: string | null }
     <div
       ref={containerRef}
       className="flex-1 overflow-hidden selectable"
-      style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0 }}
+      style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0, paddingTop: 4 }}
       onClick={() => containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()}
     />
   )

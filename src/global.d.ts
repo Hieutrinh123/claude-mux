@@ -1,6 +1,6 @@
 interface Window {
   api: {
-    ptySpawn: (opts: { sessionId: string; cwd: string; model: string; skipPermissions?: boolean }) => Promise<void>
+    ptySpawn: (opts: { sessionId: string; cwd: string; model: string; skipPermissions?: boolean; cols?: number; rows?: number }) => Promise<void>
     ptyWrite: (sessionId: string, data: string) => void
     ptyResize: (sessionId: string, cols: number, rows: number) => void
     ptyKill: (sessionId: string) => void
@@ -9,5 +9,10 @@ interface Window {
     onPtyError: (sessionId: string, cb: (msg: string) => void) => () => void
     claudeCheck: () => Promise<string>
     openFolder:  () => Promise<string | null>
+    gitStatus:   (cwd: string, file?: string, commitHash?: string) => Promise<{
+      files:     { path: string; status: string }[]
+      commits:   { hash: string; fullHash: string; message: string; date: string }[]
+      fileDiffs: Record<string, { patch: string; added: number; removed: number }>
+    }>
   }
 }
