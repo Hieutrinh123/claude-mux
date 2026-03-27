@@ -41,14 +41,23 @@ export default function TerminalPane({ sessionId, onReady }: {
     const offData = window.api.onPtyData(sid, (data) => {
       appendBuf(sid, data)
       if (term) {
-        term.write(data)
         if (autoScrollEnabled && !userScrolledUp) {
-          requestAnimationFrame(() => term?.scrollToBottom())
+          // Normal: follow output to bottom. Use write callback so scrollToBottom
+          // fires AFTER xterm processes the chunk (write() is async in xterm v6).
+          term.write(data, () => {
+            if (!disposed && autoScrollEnabled && !userScrolledUp) term?.scrollToBottom()
+          })
         } else if (!autoScrollEnabled) {
           // Fresh session: keep viewport at top so welcome card header stays visible.
-          // Mark as "user scrolled up" so ResizeObserver won't call scrollToBottom.
+          // Set userScrolledUp synchronously so ResizeObserver can't call scrollToBottom
+          // in the async gap between write() and the callback firing.
           userScrolledUp = true
-          requestAnimationFrame(() => { if (!disposed && !autoScrollEnabled) term?.scrollToTop() })
+          term.write(data, () => {
+            if (!disposed && !autoScrollEnabled) term?.scrollToTop()
+          })
+        } else {
+          // User manually scrolled up: just write, no scroll adjustment.
+          term.write(data)
         }
       } else {
         pending.push(data)

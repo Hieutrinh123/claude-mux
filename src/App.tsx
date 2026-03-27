@@ -453,12 +453,10 @@ export default function App() {
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
   const spawnedSessions  = useRef<Set<string>>(new Set())
-  const wsSessionNums    = useRef<Map<string, number>>(new Map())
 
   function nextNumForWs(wsId: string): number {
-    const n = (wsSessionNums.current.get(wsId) ?? 0) + 1
-    wsSessionNums.current.set(wsId, n)
-    return n
+    const wsSessions = sessions.filter((s) => s.workspaceId === wsId)
+    return wsSessions.length + 1
   }
 
   // ── Startup: detect CLI then load workspaces ────────────────────────────────
@@ -600,16 +598,31 @@ export default function App() {
   }
 
   function handleDeleteSession(sessionId: string) {
+    const deletedSession = sessions.find((s) => s.id === sessionId)
+    if (!deletedSession) return
+
     window.api.ptyKill(sessionId)
     spawnedSessions.current.delete(sessionId)
     pendingSpawn.current.delete(sessionId)
+
     setSessions((prev) => {
-      const next = prev.filter((s) => s.id !== sessionId)
+      const wsId = deletedSession.workspaceId
+      const otherWorkspaces = prev.filter((s) => s.workspaceId !== wsId)
+      const wsSessionsFiltered = prev.filter((s) => s.workspaceId === wsId && s.id !== sessionId)
+
+      // Renumber display names for remaining sessions (keep IDs stable)
+      const renumbered = wsSessionsFiltered.map((s, idx) => {
+        const newName = `session_${idx + 1}`
+        return { ...s, name: newName }
+      })
+
+      const next = [...otherWorkspaces, ...renumbered]
+
+      // If deleted session was active, select the last remaining session in workspace
       if (activeSessionId === sessionId) {
-        const ws = workspaces.find((w) => w.id === prev.find((s) => s.id === sessionId)?.workspaceId)
-        const remaining = next.filter((s) => s.workspaceId === ws?.id)
-        setActiveSessionId(remaining[remaining.length - 1]?.id ?? null)
+        setActiveSessionId(renumbered[renumbered.length - 1]?.id ?? null)
       }
+
       return next
     })
   }
