@@ -12,7 +12,7 @@ function appendBuf(sid: string, data: string) {
   let b = buffers.get(sid)
   if (!b) { b = []; buffers.set(sid, b) }
   b.push(data)
-  if (b.length > 3000) b.splice(0, b.length - 3000)
+  if (b.length > 10000) b.splice(0, b.length - 10000)
 }
 
 export function clearBuffer(sid: string) {
@@ -136,7 +136,7 @@ export default function TerminalPane({ sessionId, onReady }: {
         cursorBlink: false,
         fontSize: 13,
         fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
-        scrollback: 5000,
+        scrollback: 25000,
         theme: {
           background:          '#0A0A0A',
           foreground:          '#FAFAFA',
