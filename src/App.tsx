@@ -264,20 +264,22 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
   if (state === 'collapsed') {
     return (
       <div
-        className="flex-shrink-0 flex flex-col items-center pt-3 gap-4 cursor-pointer border-l border-tm-border bg-tm-bg"
+        className="flex-shrink-0 flex flex-col items-center pt-3 gap-3 cursor-pointer border-l border-tm-border bg-tm-bg"
         style={{ width: 32 }}
         onClick={onToggle}
         title="Open panel"
       >
-        <div className="flex flex-col items-center gap-[2px] border border-tm-green px-[5px] py-[5px]">
-          {['g','i','t'].map((c) => (
-            <span key={c} className="text-[9px] font-bold text-tm-green leading-none">{c}</span>
-          ))}
+        {/* git-branch icon */}
+        <div className="p-[5px] border border-tm-green">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+          </svg>
         </div>
-        <div className="flex flex-col items-center gap-[2px] border border-tm-border px-[5px] py-[5px]">
-          {['d','i','f','f'].map((c) => (
-            <span key={c} className="text-[9px] text-tm-dim leading-none">{c}</span>
-          ))}
+        {/* file-diff icon */}
+        <div className="p-[5px] border border-tm-border">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4B5563" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M9 10h6"/><path d="M12 7v6"/><path d="M9 17h6"/>
+          </svg>
         </div>
         <div className="w-[6px] h-[6px] rounded-full bg-tm-cyan" />
       </div>
@@ -290,7 +292,11 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
       {/* Header */}
       <div className="flex items-center px-3 h-8 border-b border-tm-border bg-tm-surface flex-shrink-0">
         <span className="text-[11px] font-bold text-tm-green flex-1">// git_panel</span>
-        <button onClick={onToggle} className="text-[10px] text-tm-dim hover:text-tm-muted">[collapse]</button>
+        <button onClick={onToggle} className="text-tm-dim hover:text-tm-muted" title="Collapse panel">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" />
+          </svg>
+        </button>
       </div>
 
       {/* Tab row */}
@@ -455,6 +461,7 @@ export default function App() {
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
   const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
+  const [layoutPickerAnchor, setLayoutPickerAnchor] = useState<DOMRect | null>(null)
   const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(() => {
     const s = settings.sessionLayout
     return (s === 'split' || s === 'hstack' || s === 'master' || s === 'quad' || s === 'three') ? s : 'single'
@@ -750,7 +757,7 @@ export default function App() {
         </div>
 
         <button
-          onClick={() => setShowLayoutPicker(true)}
+          onClick={(e) => { setShowLayoutPicker(true); setLayoutPickerAnchor((e.currentTarget as HTMLButtonElement).getBoundingClientRect()) }}
           className="flex items-center gap-[5px] px-2 py-1 bg-tm-bg border border-tm-green rounded-sm hover:bg-tm-surface titlebar-nodrag flex-shrink-0"
           title="Change session layout"
         >
@@ -1029,6 +1036,7 @@ export default function App() {
       {showLayoutPicker && (
         <LayoutPickerModal
           currentLayout={sessionLayout}
+          anchor={layoutPickerAnchor}
           onSelect={handleLayoutChange}
           onClose={() => setShowLayoutPicker(false)}
         />

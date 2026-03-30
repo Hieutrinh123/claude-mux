@@ -3,6 +3,7 @@ import type { SessionLayout } from '../types'
 
 interface Props {
   currentLayout: SessionLayout
+  anchor: DOMRect | null
   onSelect: (layout: SessionLayout) => void
   onClose: () => void
 }
@@ -76,22 +77,25 @@ function LayoutCard({ layout, selected, onSelect }: {
   )
 }
 
-export default function LayoutPickerModal({ currentLayout, onSelect, onClose }: Props) {
+export default function LayoutPickerModal({ currentLayout, anchor, onSelect, onClose }: Props) {
   const [selected, setSelected] = useState<Exclude<SessionLayout, 'single'>>(
     currentLayout === 'single' ? 'split' : currentLayout
   )
 
   const handleApply = () => { onSelect(selected); onClose() }
 
+  const top  = anchor ? anchor.bottom + 6 : 40
+  const left = anchor ? anchor.right - 360 : undefined
+
   return (
     <div
-      className="fixed inset-0 flex items-start justify-center bg-black/40 z-50"
+      className="fixed inset-0 z-50"
       onClick={onClose}
       onKeyDown={(e) => { if (e.key === 'Escape') onClose(); if (e.key === 'Enter') handleApply() }}
     >
       <div
-        className="mt-8 w-[360px] bg-[#0F0F0F] border border-tm-border"
-        style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.6)' }}
+        className="absolute w-[360px] bg-[#0F0F0F] border border-tm-border"
+        style={{ top, left, boxShadow: '0 8px 24px rgba(0,0,0,0.6)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
