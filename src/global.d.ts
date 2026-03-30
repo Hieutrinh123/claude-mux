@@ -14,5 +14,6 @@ interface Window {
       commits:   { hash: string; fullHash: string; parents: string[]; refs: string[]; message: string; date: string; isoDate: string; author: string }[]
       fileDiffs: Record<string, { patch: string; added: number; removed: number }>
     }>
+    saveClipboardImage: (buffer: number[], ext: string) => Promise<string>
   }
 }

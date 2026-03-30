@@ -89,6 +89,44 @@ export default function TerminalPane({ sessionId, onReady }: {
       else pending.push(msg)
     })
 
+    async function handlePaste() {
+      try {
+        // Try to read all clipboard formats
+        const clipboardItems = await navigator.clipboard.read()
+
+        for (const item of clipboardItems) {
+          // Check for image types
+          const imageType = item.types.find(type => type.startsWith('image/'))
+
+          if (imageType) {
+            const blob = await item.getType(imageType)
+            const buffer = await blob.arrayBuffer()
+            const ext = imageType.split('/')[1] || 'png'
+
+            try {
+              const filePath = await window.api.saveClipboardImage(Array.from(new Uint8Array(buffer)), ext)
+              // Insert path with quotes to handle spaces
+              const quotedPath = filePath.includes(' ') ? `"${filePath}"` : filePath
+              window.api.ptyWrite(sid, quotedPath)
+              return
+            } catch (err) {
+              console.error('Failed to save clipboard image:', err)
+            }
+          }
+        }
+
+        // Fallback to text if no image found
+        const text = await navigator.clipboard.readText()
+        if (text) window.api.ptyWrite(sid, text)
+      } catch (err) {
+        // Fallback to legacy text paste on permission denial or old browser
+        try {
+          const text = await navigator.clipboard.readText()
+          if (text) window.api.ptyWrite(sid, text)
+        } catch {}
+      }
+    }
+
     function tryInit(): boolean {
       const el = containerRef.current
       if (!el || disposed) return false
@@ -187,7 +225,7 @@ export default function TerminalPane({ sessionId, onReady }: {
           return false
         }
         if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
-          navigator.clipboard.readText().then((txt) => window.api.ptyWrite(sid, txt)).catch(() => {})
+          handlePaste()
           return false
         }
         return true
@@ -197,7 +235,7 @@ export default function TerminalPane({ sessionId, onReady }: {
         e.preventDefault()
         const sel = t.getSelection()
         if (sel) navigator.clipboard.writeText(sel).catch(() => {})
-        else navigator.clipboard.readText().then((txt) => window.api.ptyWrite(sid, txt)).catch(() => {})
+        else handlePaste()
       })
 
       el.addEventListener('wheel', (e) => {

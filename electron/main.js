@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const pty = require('node-pty')
 const os = require('os')
 const path = require('path')
+const fs = require('fs')
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -216,4 +217,20 @@ ipcMain.handle('git:status', async (_e, { cwd, commitHash }) => {
   }
 
   return { files, commits, fileDiffs }
+})
+
+// ── Clipboard image handler ────────────────────────────────────────────────────
+
+ipcMain.handle('clipboard:save-image', async (_e, { buffer, ext }) => {
+  const tmpDir = os.tmpdir()
+  const timestamp = Date.now()
+  const fileName = `paste-${timestamp}.${ext}`
+  const filePath = path.join(tmpDir, fileName)
+
+  try {
+    fs.writeFileSync(filePath, Buffer.from(buffer))
+    return filePath
+  } catch (err) {
+    throw new Error(`Failed to save image: ${err.message}`)
+  }
 })
