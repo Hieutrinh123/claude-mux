@@ -102,7 +102,7 @@ export default function TerminalPane({ sessionId, onReady }: {
         theme: {
           background:          '#0A0A0A',
           foreground:          '#FAFAFA',
-          cursor:              '#10B981',
+          cursor:              '#0A0A0A',
           cursorAccent:        '#0A0A0A',
           selectionBackground: '#10B98133',
           black:   '#1e1e1e', red:     '#EF4444', green:   '#10B981', yellow:  '#F59E0B',
