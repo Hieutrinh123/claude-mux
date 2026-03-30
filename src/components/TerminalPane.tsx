@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SerializeAddon } from '@xterm/addon-serialize'
 import '@xterm/xterm/css/xterm.css'
 
-// Per-session terminal buffer — survives component unmount
+// Per-session terminal state
 const buffers = new Map<string, string[]>()
+const serializedStates = new Map<string, string>()
 
 function appendBuf(sid: string, data: string) {
   let b = buffers.get(sid)
@@ -15,7 +17,9 @@ function appendBuf(sid: string, data: string) {
 
 export function clearBuffer(sid: string) {
   buffers.delete(sid)
+  serializedStates.delete(sid)
 }
+
 
 export default function TerminalPane({ sessionId, onReady }: {
   sessionId: string | null
@@ -37,9 +41,22 @@ export default function TerminalPane({ sessionId, onReady }: {
     // sequences from scrolling the top border off-screen on Windows/ConPTY.
     const isFreshSession = !buffers.has(sid) || buffers.get(sid)!.length === 0
     let autoScrollEnabled = !isFreshSession
+    let serializeInterval: ReturnType<typeof setInterval> | undefined
+
+    // Throttle scrollToBottom to prevent cursor jumping during streaming
+    let scrollPending = false
+    const scheduleScroll = () => {
+      if (scrollPending || !term || disposed) return
+      scrollPending = true
+      requestAnimationFrame(() => {
+        if (!disposed && term) term.scrollToBottom()
+        scrollPending = false
+      })
+    }
 
     const offData = window.api.onPtyData(sid, (data) => {
       appendBuf(sid, data)
+
       if (term) {
         // Check if user is at bottom RIGHT NOW before writing
         const buf = term.buffer.active
@@ -47,10 +64,9 @@ export default function TerminalPane({ sessionId, onReady }: {
         const shouldAutoScroll = autoScrollEnabled && !userScrolledUp && isAtBottom
 
         if (shouldAutoScroll) {
-          // Follow output to bottom only if already at bottom
-          term.write(data, () => {
-            if (!disposed) term?.scrollToBottom()
-          })
+          // Write immediately, schedule scroll (throttled)
+          term.write(data)
+          scheduleScroll()
         } else if (!autoScrollEnabled) {
           // Fresh session: keep viewport at top so welcome card header stays visible.
           userScrolledUp = true
@@ -79,7 +95,7 @@ export default function TerminalPane({ sessionId, onReady }: {
       if (el.offsetWidth < 50 || el.offsetHeight < 50) return false
 
       const t = new XTerm({
-        cursorBlink: true,
+        cursorBlink: false,
         fontSize: 13,
         fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace',
         scrollback: 5000,
@@ -98,10 +114,16 @@ export default function TerminalPane({ sessionId, onReady }: {
       })
 
       const fa = new FitAddon()
+      const sa = new SerializeAddon()
       t.loadAddon(fa)
+      t.loadAddon(sa)
 
       try { t.open(el) } catch { t.dispose(); return false }
       term = t
+
+      // Fit immediately so terminal has correct dimensions before content is written.
+      // Prevents reflow-garbling of restored text.
+      try { fa.fit() } catch {}
 
       let isComposing = false
       const textarea = el.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
@@ -114,9 +136,26 @@ export default function TerminalPane({ sessionId, onReady }: {
         textarea.setAttribute('spellcheck', 'false')
       }
 
-      for (const chunk of buffers.get(sid) ?? []) t.write(chunk)
+      // Restore in-memory state when switching between open sessions
+      const serialized = serializedStates.get(sid)
+      if (serialized) {
+        t.write(serialized)
+      } else {
+        const restoredBuffer = buffers.get(sid) ?? []
+        for (const chunk of restoredBuffer) t.write(chunk)
+      }
+
       for (const d of pending) t.write(d)
       pending.length = 0
+
+      t.scrollToBottom()
+
+      // Periodically serialize terminal state for clean restoration
+      serializeInterval = setInterval(() => {
+        if (!disposed && t) {
+          serializedStates.set(sid, sa.serialize())
+        }
+      }, 2000)
 
       // Wait for layout to fully settle before reporting dimensions to avoid
       // spawning Claude Code at a narrower width than the final terminal size
@@ -162,6 +201,7 @@ export default function TerminalPane({ sessionId, onReady }: {
       })
 
       el.addEventListener('wheel', (e) => {
+        if (disposed) return
         if (e.deltaY < 0) { userScrolledUp = true }
         else {
           const buf = t.buffer.active
@@ -192,7 +232,11 @@ export default function TerminalPane({ sessionId, onReady }: {
       const iv = setInterval(() => { if (tryInit()) clearInterval(iv) }, 50)
       return () => { disposed = true; clearInterval(iv); cleanup() }
     }
-    return () => { disposed = true; cleanup() }
+    return () => {
+      disposed = true
+      if (serializeInterval) clearInterval(serializeInterval)
+      cleanup()
+    }
 
     function cleanup() {
       offData(); offExit()

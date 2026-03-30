@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useReducer, useMemo } from 'react'
-import type { AppScreen, Workspace, Session, AppSettings } from './types'
+import type { AppScreen, Workspace, Session, AppSettings, SessionLayout } from './types'
 import { loadWorkspaces, saveWorkspaces, loadSettings, saveSettings, nextWorkspaceColor } from './storage'
-import TerminalPane from './components/TerminalPane'
+import TerminalPane, { clearBuffer } from './components/TerminalPane'
 import FirstRunNoCli from './screens/FirstRunNoCli'
 import Settings from './screens/Settings'
 import NewWorkspaceModal from './modals/NewWorkspaceModal'
 import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
+import LayoutPickerModal from './modals/LayoutPickerModal'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
 
@@ -452,6 +453,8 @@ export default function App() {
   const [panelState, setPanelState]   = useState<'open' | 'collapsed'>('open')
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
+  const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
+  const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(settings.sessionLayout || 'strip')
   const spawnedSessions  = useRef<Set<string>>(new Set())
 
   function nextNumForWs(wsId: string): number {
@@ -463,6 +466,7 @@ export default function App() {
   useEffect(() => {
     window.api.claudeCheck()
       .then(() => {
+        localStorage.removeItem('cm:sessions') // sessions are ephemeral, clear any stale data
         const ws = loadWorkspaces()
         setWorkspaces(ws)
         setScreen('main')
@@ -480,6 +484,16 @@ export default function App() {
     if (!found) return
     setActiveWsId(id)
     setExpandedWs(new Set([id]))
+    // Always start with a fresh session_1 on launch
+    const session: Session = {
+      id:          `${found.id}-s1`,
+      workspaceId: found.id,
+      name:        'session_1',
+      model:       settings.defaultModel,
+    }
+    setSessions((prev) => prev.some((s) => s.id === session.id) ? prev : [...prev, session])
+    setActiveSessionId(session.id)
+    spawnSession(session, found)
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────
@@ -513,6 +527,11 @@ export default function App() {
     const next = workspaces.filter((w) => w.id !== id)
     setWorkspaces(next)
     saveWorkspaces(next)
+
+    // Clear buffers for all sessions in this workspace
+    const wsSessionIds = sessions.filter((s) => s.workspaceId === id).map((s) => s.id)
+    wsSessionIds.forEach((sid) => clearBuffer(sid))
+
     setSessions((prev) => prev.filter((s) => s.workspaceId !== id))
     if (activeWsId === id) {
       setActiveWsId(next[0]?.id ?? null)
@@ -604,6 +623,7 @@ export default function App() {
     window.api.ptyKill(sessionId)
     spawnedSessions.current.delete(sessionId)
     pendingSpawn.current.delete(sessionId)
+    clearBuffer(sessionId)  // Clear terminal buffer
 
     setSessions((prev) => {
       const wsId = deletedSession.workspaceId
@@ -624,6 +644,15 @@ export default function App() {
       }
 
       return next
+    })
+  }
+
+  function handleLayoutChange(layout: SessionLayout) {
+    setSessionLayout(layout)
+    setSettings((prev) => {
+      const updated = { ...prev, sessionLayout: layout }
+      saveSettings(updated)
+      return updated
     })
   }
 
@@ -687,6 +716,21 @@ export default function App() {
             </span>
           )}
         </div>
+
+        <button
+          onClick={() => setShowLayoutPicker(true)}
+          className="flex items-center gap-[5px] px-2 py-1 bg-tm-bg border border-tm-green rounded-sm hover:bg-tm-surface titlebar-nodrag flex-shrink-0"
+          title="Change session layout"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-tm-green">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          <span className="text-[10px] font-bold text-tm-green">layout</span>
+          <span className="text-[9px] text-tm-green">▾</span>
+        </button>
 
       </div>
 
@@ -769,36 +813,134 @@ export default function App() {
         </aside>
 
         {/* ── Content ───────────────────────────────────────────────────────── */}
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-
-          {/* Tab bar */}
-          <div className="flex items-end h-9 flex-shrink-0 border-b border-tm-border bg-tm-bg">
-            {activeWsId && wsSessions(activeWsId).map((s) => (
-              <div
-                key={s.id}
-                onClick={() => handleSelectSession(s)}
-                className={`flex items-center px-4 h-full cursor-pointer text-[12px] border-r border-tm-border flex-shrink-0 ${
-                  s.id === activeSessionId
-                    ? 'text-tm-text border-t-2 border-t-tm-green bg-tm-bg'
-                    : 'text-tm-dim hover:text-tm-muted border-t-2 border-t-transparent'
-                }`}
-              >
-                {s.name}
-              </div>
-            ))}
-            <div className="flex-1" />
-            {activeWsId && (
-              <button
-                onClick={() => handleNewSession(activeWsId)}
-                className="flex items-center px-3 h-full text-tm-dim hover:text-tm-muted text-[16px] flex-shrink-0"
-              >
-                +
-              </button>
-            )}
+        {sessionLayout === 'strip' && (
+          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+            {/* Tab bar */}
+            <div className="flex items-end h-9 flex-shrink-0 border-b border-tm-border bg-tm-bg">
+              {activeWsId && wsSessions(activeWsId).map((s) => (
+                <div
+                  key={s.id}
+                  onClick={() => handleSelectSession(s)}
+                  className={`flex items-center px-4 h-full cursor-pointer text-[12px] border-r border-tm-border flex-shrink-0 ${
+                    s.id === activeSessionId
+                      ? 'text-tm-text border-t-2 border-t-tm-green bg-tm-bg'
+                      : 'text-tm-dim hover:text-tm-muted border-t-2 border-t-transparent'
+                  }`}
+                >
+                  {s.name}
+                </div>
+              ))}
+              <div className="flex-1" />
+              {activeWsId && (
+                <button
+                  onClick={() => handleNewSession(activeWsId)}
+                  className="flex items-center px-3 h-full text-tm-dim hover:text-tm-muted text-[16px] flex-shrink-0"
+                >
+                  +
+                </button>
+              )}
+            </div>
+            <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
           </div>
+        )}
 
-          <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
-        </div>
+        {sessionLayout === 'split' && (
+          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+            {/* Session selector in center of topbar for split mode */}
+            <div className="flex items-center justify-center h-9 flex-shrink-0 border-b border-tm-border bg-tm-bg">
+              <select
+                value={activeSessionId ?? ''}
+                onChange={(e) => {
+                  const session = sessions.find(s => s.id === e.target.value)
+                  if (session) handleSelectSession(session)
+                }}
+                className="bg-tm-surface border border-tm-border text-tm-text text-[11px] px-2 py-1 rounded"
+              >
+                {activeWsId && wsSessions(activeWsId).map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            {/* Split panes */}
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex-1 min-w-0">
+                <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
+              </div>
+              <div className="w-[1px] bg-tm-border flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                {activeWsId && wsSessions(activeWsId).length > 1 ? (
+                  <TerminalPane
+                    sessionId={wsSessions(activeWsId).find(s => s.id !== activeSessionId)?.id ?? null}
+                    onReady={handleTerminalReady}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-tm-dim text-[11px]">
+                    No second session available
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {sessionLayout === 'drawer' && (
+          <div className="flex flex-1 overflow-hidden min-w-0">
+            {/* Icon strip */}
+            <div className="flex flex-col w-12 bg-tm-surface border-r border-tm-border gap-2 py-3 items-center flex-shrink-0">
+              {activeWsId && wsSessions(activeWsId).map((s, idx) => (
+                <button
+                  key={s.id}
+                  onClick={() => handleSelectSession(s)}
+                  className={`w-8 h-8 rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
+                    s.id === activeSessionId
+                      ? 'bg-tm-green text-tm-bg'
+                      : 'bg-tm-bg text-tm-dim hover:bg-tm-border hover:text-tm-text'
+                  }`}
+                  title={s.name}
+                >
+                  {idx + 1}
+                </button>
+              ))}
+              {activeWsId && (
+                <button
+                  onClick={() => handleNewSession(activeWsId)}
+                  className="w-8 h-8 rounded flex items-center justify-center text-[16px] bg-tm-bg text-tm-dim hover:bg-tm-border hover:text-tm-text"
+                  title="New session"
+                >
+                  +
+                </button>
+              )}
+            </div>
+            {/* Drawer */}
+            <div className="w-[200px] bg-tm-bg border-r border-tm-border flex-shrink-0 overflow-auto">
+              <div className="p-3">
+                <div className="text-[9px] text-tm-dim mb-3 tracking-widest">// sessions</div>
+                {activeWsId && wsSessions(activeWsId).map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => handleSelectSession(s)}
+                    className={`group flex items-center gap-2 px-2 py-[6px] cursor-pointer rounded text-[11px] mb-1 ${
+                      s.id === activeSessionId
+                        ? 'bg-tm-green/10 text-tm-green border-l-2 border-tm-green pl-[6px]'
+                        : 'text-tm-dim hover:bg-tm-surface border-l-2 border-transparent'
+                    }`}
+                  >
+                    <span className="flex-1">$ {s.name}</span>
+                    <button
+                      className="opacity-0 group-hover:opacity-100 text-[10px] hover:text-tm-red"
+                      onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id) }}
+                      title="Delete session"
+                    >×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Terminal */}
+            <div className="flex-1 min-w-0">
+              <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
+            </div>
+          </div>
+        )}
 
         {/* ── Right panel ───────────────────────────────────────────────────── */}
         <RightPanel
@@ -823,6 +965,14 @@ export default function App() {
           workspace={deleteWs}
           onConfirm={() => handleDeleteWorkspace(deleteWs.id)}
           onCancel={() => setDeleteWsId(null)}
+        />
+      )}
+
+      {showLayoutPicker && (
+        <LayoutPickerModal
+          currentLayout={sessionLayout}
+          onSelect={handleLayoutChange}
+          onClose={() => setShowLayoutPicker(false)}
         />
       )}
     </div>
