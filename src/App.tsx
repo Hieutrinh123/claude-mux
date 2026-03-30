@@ -8,6 +8,7 @@ import NewWorkspaceModal from './modals/NewWorkspaceModal'
 import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 import LayoutPickerModal from './modals/LayoutPickerModal'
+import PaneHeader from './components/PaneHeader'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
 
@@ -454,7 +455,13 @@ export default function App() {
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
   const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
-  const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(settings.sessionLayout || 'strip')
+  const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(() => {
+    const s = settings.sessionLayout
+    return (s === 'split' || s === 'hstack' || s === 'master' || s === 'quad' || s === 'three') ? s : 'single'
+  })
+  const [paneAssignments, setPaneAssignments]     = useState<(string | null)[]>([])
+  const [openDropdownPane, setOpenDropdownPane]   = useState<number | null>(null)
+  const [dropdownAnchor, setDropdownAnchor]       = useState<DOMRect | null>(null)
   const spawnedSessions  = useRef<Set<string>>(new Set())
 
   function nextNumForWs(wsId: string): number {
@@ -478,6 +485,31 @@ export default function App() {
       })
       .catch(() => setScreen('first-run-no-cli'))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Pane assignments ───────────────────────────────────────────────────────
+  function panesForLayout(layout: SessionLayout): number {
+    if (layout === 'split' || layout === 'hstack') return 2
+    if (layout === 'master' || layout === 'three') return 3
+    if (layout === 'quad') return 4
+    return 0
+  }
+
+  useEffect(() => {
+    const count = panesForLayout(sessionLayout)
+    const all = activeWsId ? sessions.filter(s => s.workspaceId === activeWsId) : []
+    setPaneAssignments(prev => {
+      // Preserve valid assignments when only sessions list changed (e.g. new session added)
+      if (prev.length === count && prev.every(id => id === null || all.some(s => s.id === id))) return prev
+      return Array.from({ length: count }, (_, i) => all[i]?.id ?? null)
+    })
+  }, [sessionLayout, activeWsId, sessions]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (openDropdownPane === null) return
+    function close() { setOpenDropdownPane(null); setDropdownAnchor(null) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [openDropdownPane])
 
   function autoSelectWorkspace(ws: Workspace[], id: string) {
     const found = ws.find((w) => w.id === id)
@@ -813,134 +845,133 @@ export default function App() {
         </aside>
 
         {/* ── Content ───────────────────────────────────────────────────────── */}
-        {sessionLayout === 'strip' && (
-          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-            {/* Tab bar */}
-            <div className="flex items-end h-9 flex-shrink-0 border-b border-tm-border bg-tm-bg">
-              {activeWsId && wsSessions(activeWsId).map((s) => (
-                <div
-                  key={s.id}
-                  onClick={() => handleSelectSession(s)}
-                  className={`flex items-center px-4 h-full cursor-pointer text-[12px] border-r border-tm-border flex-shrink-0 ${
-                    s.id === activeSessionId
-                      ? 'text-tm-text border-t-2 border-t-tm-green bg-tm-bg'
-                      : 'text-tm-dim hover:text-tm-muted border-t-2 border-t-transparent'
-                  }`}
-                >
-                  {s.name}
-                </div>
-              ))}
-              <div className="flex-1" />
-              {activeWsId && (
-                <button
-                  onClick={() => handleNewSession(activeWsId)}
-                  className="flex items-center px-3 h-full text-tm-dim hover:text-tm-muted text-[16px] flex-shrink-0"
-                >
-                  +
-                </button>
-              )}
-            </div>
-            <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
-          </div>
-        )}
+        {(() => {
+          const slot = (n: number): string | null => paneAssignments[n] ?? null
+          const div  = (n: number) => <div key={n} className="w-px bg-tm-border flex-shrink-0" />
+          const hdiv = (n: number) => <div key={n} className="h-px bg-tm-border flex-shrink-0" />
+          const wsList = activeWsId ? wsSessions(activeWsId) : []
 
-        {sessionLayout === 'split' && (
-          <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-            {/* Session selector in center of topbar for split mode */}
-            <div className="flex items-center justify-center h-9 flex-shrink-0 border-b border-tm-border bg-tm-bg">
-              <select
-                value={activeSessionId ?? ''}
-                onChange={(e) => {
-                  const session = sessions.find(s => s.id === e.target.value)
-                  if (session) handleSelectSession(session)
-                }}
-                className="bg-tm-surface border border-tm-border text-tm-text text-[11px] px-2 py-1 rounded"
-              >
-                {activeWsId && wsSessions(activeWsId).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-            {/* Split panes */}
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex-1 min-w-0">
-                <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
-              </div>
-              <div className="w-[1px] bg-tm-border flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                {activeWsId && wsSessions(activeWsId).length > 1 ? (
-                  <TerminalPane
-                    sessionId={wsSessions(activeWsId).find(s => s.id !== activeSessionId)?.id ?? null}
-                    onReady={handleTerminalReady}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full text-tm-dim text-[11px]">
-                    No second session available
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+          const ph = (n: number) => (
+            <PaneHeader
+              key={`ph-${n}`}
+              sessionId={slot(n)}
+              sessions={wsList}
+              workspaces={workspaces}
+              isOpen={openDropdownPane === n}
+              onToggle={e => {
+                e.stopPropagation()
+                if (openDropdownPane === n) {
+                  setOpenDropdownPane(null); setDropdownAnchor(null)
+                } else {
+                  setOpenDropdownPane(n)
+                  setDropdownAnchor((e.currentTarget as HTMLDivElement).getBoundingClientRect())
+                }
+              }}
+            />
+          )
 
-        {sessionLayout === 'drawer' && (
-          <div className="flex flex-1 overflow-hidden min-w-0">
-            {/* Icon strip */}
-            <div className="flex flex-col w-12 bg-tm-surface border-r border-tm-border gap-2 py-3 items-center flex-shrink-0">
-              {activeWsId && wsSessions(activeWsId).map((s, idx) => (
-                <button
-                  key={s.id}
-                  onClick={() => handleSelectSession(s)}
-                  className={`w-8 h-8 rounded flex items-center justify-center text-[10px] font-bold transition-colors ${
-                    s.id === activeSessionId
-                      ? 'bg-tm-green text-tm-bg'
-                      : 'bg-tm-bg text-tm-dim hover:bg-tm-border hover:text-tm-text'
-                  }`}
-                  title={s.name}
-                >
-                  {idx + 1}
-                </button>
-              ))}
-              {activeWsId && (
-                <button
-                  onClick={() => handleNewSession(activeWsId)}
-                  className="w-8 h-8 rounded flex items-center justify-center text-[16px] bg-tm-bg text-tm-dim hover:bg-tm-border hover:text-tm-text"
-                  title="New session"
-                >
-                  +
-                </button>
-              )}
-            </div>
-            {/* Drawer */}
-            <div className="w-[200px] bg-tm-bg border-r border-tm-border flex-shrink-0 overflow-auto">
-              <div className="p-3">
-                <div className="text-[9px] text-tm-dim mb-3 tracking-widest">// sessions</div>
-                {activeWsId && wsSessions(activeWsId).map((s) => (
-                  <div
-                    key={s.id}
-                    onClick={() => handleSelectSession(s)}
-                    className={`group flex items-center gap-2 px-2 py-[6px] cursor-pointer rounded text-[11px] mb-1 ${
-                      s.id === activeSessionId
-                        ? 'bg-tm-green/10 text-tm-green border-l-2 border-tm-green pl-[6px]'
-                        : 'text-tm-dim hover:bg-tm-surface border-l-2 border-transparent'
-                    }`}
-                  >
-                    <span className="flex-1">$ {s.name}</span>
-                    <button
-                      className="opacity-0 group-hover:opacity-100 text-[10px] hover:text-tm-red"
-                      onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id) }}
-                      title="Delete session"
-                    >×</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-            {/* Terminal */}
-            <div className="flex-1 min-w-0">
+          if (sessionLayout === 'single') return (
+            <div className="flex flex-col flex-1 overflow-hidden min-w-0">
               <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
             </div>
-          </div>
-        )}
+          )
+
+          if (sessionLayout === 'split') return (
+            <div className="flex flex-1 overflow-hidden min-w-0">
+              <div className="flex flex-col flex-1 min-w-0">
+                {ph(0)}
+                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+              </div>
+              {div(0)}
+              <div className="flex flex-col flex-1 min-w-0">
+                {ph(1)}
+                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+              </div>
+            </div>
+          )
+
+          if (sessionLayout === 'hstack') return (
+            <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+              <div className="flex flex-col flex-1 min-h-0">
+                {ph(0)}
+                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+              </div>
+              {hdiv(0)}
+              <div className="flex flex-col flex-1 min-h-0">
+                {ph(1)}
+                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+              </div>
+            </div>
+          )
+
+          if (sessionLayout === 'master') return (
+            <div className="flex flex-1 overflow-hidden min-w-0">
+              <div className="flex flex-col min-w-0" style={{ flex: '0 0 60%' }}>
+                {ph(0)}
+                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+              </div>
+              {div(0)}
+              <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+                <div className="flex flex-col flex-1 min-h-0">
+                  {ph(1)}
+                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                </div>
+                {hdiv(0)}
+                <div className="flex flex-col flex-1 min-h-0">
+                  {ph(2)}
+                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                </div>
+              </div>
+            </div>
+          )
+
+          if (sessionLayout === 'quad') return (
+            <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+              <div className="flex flex-1 min-h-0">
+                <div className="flex flex-col flex-1 min-w-0">
+                  {ph(0)}
+                  <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                </div>
+                {div(0)}
+                <div className="flex flex-col flex-1 min-w-0">
+                  {ph(1)}
+                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                </div>
+              </div>
+              {hdiv(0)}
+              <div className="flex flex-1 min-h-0">
+                <div className="flex flex-col flex-1 min-w-0">
+                  {ph(2)}
+                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                </div>
+                {div(1)}
+                <div className="flex flex-col flex-1 min-w-0">
+                  {ph(3)}
+                  <TerminalPane sessionId={slot(3)} onReady={handleTerminalReady} />
+                </div>
+              </div>
+            </div>
+          )
+
+          if (sessionLayout === 'three') return (
+            <div className="flex flex-1 overflow-hidden min-w-0">
+              <div className="flex flex-col flex-1 min-w-0">
+                {ph(0)}
+                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+              </div>
+              {div(0)}
+              <div className="flex flex-col flex-1 min-w-0">
+                {ph(1)}
+                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+              </div>
+              {div(1)}
+              <div className="flex flex-col flex-1 min-w-0">
+                {ph(2)}
+                <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+              </div>
+            </div>
+          )
+        })()}
 
         {/* ── Right panel ───────────────────────────────────────────────────── */}
         <RightPanel
@@ -950,6 +981,33 @@ export default function App() {
         />
       </div>
 
+
+{/* ── Pane dropdown overlay ────────────────────────────────────────── */}
+      {openDropdownPane !== null && dropdownAnchor && activeWsId && (
+        <div
+          className="fixed z-50 bg-[#0F0F0F] border border-[#2a2a2a]"
+          style={{ top: dropdownAnchor.bottom, left: dropdownAnchor.left, minWidth: 140, boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}
+          onMouseDown={e => e.stopPropagation()}
+        >
+          {wsSessions(activeWsId).map(s => {
+            const ws = workspaces.find(w => w.id === s.workspaceId)
+            const isCurrent = s.id === paneAssignments[openDropdownPane]
+            return (
+              <div
+                key={s.id}
+                onClick={() => {
+                  setPaneAssignments(prev => { const next = [...prev]; next[openDropdownPane!] = s.id; return next })
+                  setOpenDropdownPane(null); setDropdownAnchor(null)
+                }}
+                className={`flex items-center gap-1.5 h-[26px] px-2 cursor-pointer font-mono ${isCurrent ? 'bg-[#1A1A1A]' : 'hover:bg-[#1A1A1A]'}`}
+              >
+                <div className="w-[5px] h-[5px] rounded-sm flex-shrink-0" style={{ background: ws?.color ?? '#4B5563' }} />
+                <span className={`text-[10px] ${isCurrent ? 'text-tm-green' : 'text-[#6B7280]'}`}>{s.name}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
 {/* ── Modals ────────────────────────────────────────────────────────── */}
       {showNewWorkspace && (

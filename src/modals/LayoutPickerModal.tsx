@@ -1,130 +1,136 @@
 import { useState } from 'react'
 import type { SessionLayout } from '../types'
 
-interface LayoutPickerModalProps {
+interface Props {
   currentLayout: SessionLayout
   onSelect: (layout: SessionLayout) => void
   onClose: () => void
 }
 
-type LayoutOption = {
-  id: SessionLayout
-  name: string
-  description: string
-}
+type LayoutOption = { id: Exclude<SessionLayout, 'single'>; name: string }
 
 const LAYOUTS: LayoutOption[] = [
-  { id: 'strip', name: 'Session Strip', description: 'Horizontal tabs below topbar' },
-  { id: 'split', name: 'Split Pane', description: 'Side-by-side session view' },
-  { id: 'drawer', name: 'Session Drawer', description: 'Compact icon strip + drawer' },
+  { id: 'split',  name: 'Split Pane'   },
+  { id: 'hstack', name: 'Horiz Stack'  },
+  { id: 'master', name: 'Master+Stack' },
+  { id: 'quad',   name: 'Quad Grid'    },
+  { id: 'three',  name: 'Three Col'    },
 ]
 
-export default function LayoutPickerModal({ currentLayout, onSelect, onClose }: LayoutPickerModalProps) {
-  const [selectedLayout, setSelectedLayout] = useState<SessionLayout>(currentLayout)
+function LayoutPreview({ id }: { id: Exclude<SessionLayout, 'single'> }) {
+  const W = 90, H = 48, P = 3, G = 2
+  const iw = W - P * 2, ih = H - P * 2
+  const hw = (iw - G) / 2
+  const hh = (ih - G) / 2
+  const C = '#06B6D4'
 
-  const handleApply = () => {
-    onSelect(selectedLayout)
-    onClose()
-  }
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} fill="none" className="w-full h-full">
+      {id === 'split' && <>
+        <rect x={P} y={P} width={hw} height={ih} fill={C} opacity={0.2} rx={1} />
+        <rect x={P+hw+G} y={P} width={hw} height={ih} fill={C} opacity={0.2} rx={1} />
+      </>}
+      {id === 'hstack' && <>
+        <rect x={P} y={P} width={iw} height={hh} fill={C} opacity={0.2} rx={1} />
+        <rect x={P} y={P+hh+G} width={iw} height={hh} fill={C} opacity={0.2} rx={1} />
+      </>}
+      {id === 'master' && <>
+        <rect x={P} y={P} width={iw*0.58} height={ih} fill="#F59E0B" opacity={0.22} rx={1} />
+        <rect x={P+iw*0.58+G} y={P} width={iw*0.42-G} height={hh} fill="#F59E0B" opacity={0.15} rx={1} />
+        <rect x={P+iw*0.58+G} y={P+hh+G} width={iw*0.42-G} height={hh} fill="#F59E0B" opacity={0.15} rx={1} />
+      </>}
+      {id === 'quad' && <>
+        <rect x={P} y={P} width={hw} height={hh} fill={C} opacity={0.2} rx={1} />
+        <rect x={P+hw+G} y={P} width={hw} height={hh} fill={C} opacity={0.2} rx={1} />
+        <rect x={P} y={P+hh+G} width={hw} height={hh} fill={C} opacity={0.2} rx={1} />
+        <rect x={P+hw+G} y={P+hh+G} width={hw} height={hh} fill={C} opacity={0.2} rx={1} />
+      </>}
+      {id === 'three' && <>
+        <rect x={P} y={P} width={(iw-G*2)/3} height={ih} fill={C} opacity={0.18} rx={1} />
+        <rect x={P+(iw-G*2)/3+G} y={P} width={(iw-G*2)/3} height={ih} fill={C} opacity={0.18} rx={1} />
+        <rect x={P+2*((iw-G*2)/3+G)} y={P} width={(iw-G*2)/3} height={ih} fill={C} opacity={0.18} rx={1} />
+      </>}
+    </svg>
+  )
+}
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose()
-    if (e.key === 'Enter') handleApply()
-  }
+function LayoutCard({ layout, selected, onSelect }: {
+  layout: LayoutOption
+  selected: boolean
+  onSelect: (id: Exclude<SessionLayout, 'single'>) => void
+}) {
+  return (
+    <div
+      onClick={() => onSelect(layout.id)}
+      className={`flex-1 flex flex-col items-center gap-1.5 p-2 cursor-pointer border transition-colors ${
+        selected ? 'bg-[#1A1A1A] border-tm-green' : 'bg-[#141414] border-[#2a2a2a] hover:border-[#4B5563]'
+      }`}
+    >
+      <div className="w-full border border-[#2a2a2a] bg-[#141414]" style={{ height: 48 }}>
+        <LayoutPreview id={layout.id} />
+      </div>
+      <span className={`text-[9px] font-bold font-mono ${selected ? 'text-tm-green' : 'text-[#6B7280]'}`}>
+        {layout.name}
+      </span>
+    </div>
+  )
+}
+
+export default function LayoutPickerModal({ currentLayout, onSelect, onClose }: Props) {
+  const [selected, setSelected] = useState<Exclude<SessionLayout, 'single'>>(
+    currentLayout === 'single' ? 'split' : currentLayout
+  )
+
+  const handleApply = () => { onSelect(selected); onClose() }
 
   return (
     <div
       className="fixed inset-0 flex items-start justify-center bg-black/40 z-50"
       onClick={onClose}
-      onKeyDown={handleKeyDown}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); if (e.key === 'Enter') handleApply() }}
     >
       <div
-        className="mt-8 w-[360px] bg-tm-surface border border-tm-border rounded-sm shadow-2xl"
+        className="mt-8 w-[360px] bg-[#0F0F0F] border border-tm-border"
         style={{ boxShadow: '0 8px 24px rgba(0,0,0,0.6)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between h-9 px-3 border-b border-tm-border">
-          <span className="text-[9px] text-tm-dim tracking-widest">// select layout</span>
-          <button
-            onClick={onClose}
-            className="text-tm-dim hover:text-tm-text text-[14px] leading-none"
-          >
-            ×
-          </button>
+          <span className="text-[9px] text-tm-dim tracking-widest font-mono">// select layout</span>
+          <button onClick={onClose} className="text-tm-dim hover:text-tm-text text-[14px] leading-none">×</button>
         </div>
 
-        {/* Layout Grid */}
-        <div className="p-3 space-y-2">
-          {LAYOUTS.map((layout) => (
-            <div
-              key={layout.id}
-              onClick={() => setSelectedLayout(layout.id)}
-              className={`flex items-center gap-3 p-3 rounded cursor-pointer border transition-all ${
-                selectedLayout === layout.id
-                  ? 'border-tm-green bg-tm-green/10'
-                  : 'border-tm-border hover:border-tm-muted bg-tm-bg'
-              }`}
-            >
-              {/* Preview Icon */}
-              <div className={`flex-shrink-0 w-12 h-12 rounded border flex items-center justify-center ${
-                selectedLayout === layout.id ? 'border-tm-green' : 'border-tm-border'
-              }`}>
-                {layout.id === 'strip' && (
-                  <svg width="32" height="24" viewBox="0 0 32 24" fill="none">
-                    <rect x="2" y="2" width="28" height="4" fill="currentColor" opacity="0.3" />
-                    <rect x="2" y="8" width="8" height="2" fill="currentColor" opacity="0.6" />
-                    <rect x="12" y="8" width="8" height="2" fill="currentColor" opacity="0.4" />
-                    <rect x="22" y="8" width="8" height="2" fill="currentColor" opacity="0.4" />
-                    <rect x="2" y="12" width="28" height="10" fill="currentColor" opacity="0.2" />
-                  </svg>
-                )}
-                {layout.id === 'split' && (
-                  <svg width="32" height="24" viewBox="0 0 32 24" fill="none">
-                    <rect x="2" y="2" width="28" height="4" fill="currentColor" opacity="0.3" />
-                    <rect x="2" y="8" width="13" height="14" fill="currentColor" opacity="0.2" />
-                    <line x1="15.5" y1="8" x2="15.5" y2="22" stroke="currentColor" opacity="0.5" />
-                    <rect x="17" y="8" width="13" height="14" fill="currentColor" opacity="0.2" />
-                  </svg>
-                )}
-                {layout.id === 'drawer' && (
-                  <svg width="32" height="24" viewBox="0 0 32 24" fill="none">
-                    <rect x="2" y="2" width="28" height="4" fill="currentColor" opacity="0.3" />
-                    <rect x="2" y="8" width="3" height="14" fill="currentColor" opacity="0.4" />
-                    <rect x="6" y="8" width="6" height="14" fill="currentColor" opacity="0.3" />
-                    <rect x="14" y="8" width="16" height="14" fill="currentColor" opacity="0.2" />
-                  </svg>
-                )}
-              </div>
-
-              {/* Label & Description */}
-              <div className="flex-1 min-w-0">
-                <div className={`text-[11px] font-bold ${
-                  selectedLayout === layout.id ? 'text-tm-green' : 'text-tm-text'
-                }`}>
-                  {layout.name}
-                </div>
-                <div className="text-[9px] text-tm-dim mt-0.5">
-                  {layout.description}
-                </div>
-              </div>
-
-              {/* Checkmark */}
-              {selectedLayout === layout.id && (
-                <div className="flex-shrink-0 text-tm-green text-[12px]">✓</div>
-              )}
-            </div>
-          ))}
+        {/* Grid */}
+        <div className="flex flex-col gap-2 p-3">
+          <div className="flex gap-2">
+            {LAYOUTS.slice(0, 3).map((l) => (
+              <LayoutCard key={l.id} layout={l} selected={selected === l.id} onSelect={setSelected} />
+            ))}
+          </div>
+          <div className="flex gap-2">
+            {LAYOUTS.slice(3).map((l) => (
+              <LayoutCard key={l.id} layout={l} selected={selected === l.id} onSelect={setSelected} />
+            ))}
+          </div>
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-between h-9 px-3 border-t border-tm-border">
-          <span className="text-[9px] text-tm-dim">esc to close</span>
+          <button
+            onClick={() => { onSelect('single'); onClose() }}
+            className="flex items-center gap-1.5 px-2 py-[3px] border border-[#2a2a2a] text-[#6B7280] text-[9px] font-mono hover:border-[#4B5563] hover:text-tm-muted transition-colors"
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+            single panel
+          </button>
           <button
             onClick={handleApply}
-            className="px-[10px] py-1 bg-tm-green/90 hover:bg-tm-green text-tm-bg text-[9px] font-bold rounded"
+            className="px-[10px] py-1 bg-tm-green text-tm-bg text-[9px] font-bold font-mono hover:bg-tm-green/90 transition-colors"
           >
-            APPLY
+            apply
           </button>
         </div>
       </div>

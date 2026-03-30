@@ -1,6 +1,6 @@
 export type AppScreen = 'loading' | 'first-run-no-cli' | 'main' | 'settings'
 
-export type SessionLayout = 'strip' | 'split' | 'drawer'
+export type SessionLayout = 'single' | 'split' | 'hstack' | 'master' | 'quad' | 'three'
 
 export interface Workspace {
   id: string
