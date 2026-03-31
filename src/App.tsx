@@ -8,6 +8,8 @@ import NewWorkspaceModal from './modals/NewWorkspaceModal'
 import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 import LayoutPickerModal from './modals/LayoutPickerModal'
+import SessionTypeModal from './modals/SessionTypeModal'
+import MergeWorktreeDialog from './modals/MergeWorktreeDialog'
 import PaneHeader from './components/PaneHeader'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
@@ -220,7 +222,23 @@ function DiffContent({ patch, onLineEnter, onLineLeave }: {
   )
 }
 
-function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onToggle: () => void; cwd: string | null }) {
+function RightPanel({
+  state,
+  onToggle,
+  cwd,
+  session,
+  onMergeWorktree,
+  onSwitchToMain,
+  onSwitchToBranch,
+}: {
+  state: 'open' | 'collapsed'
+  onToggle: () => void
+  cwd: string | null
+  session: Session | null
+  onMergeWorktree?: () => void
+  onSwitchToMain?: () => void
+  onSwitchToBranch?: () => void
+}) {
   const [git, setGit]             = useState<GitData>({ files: [], commits: [], fileDiffs: {} })
   const [selection, setSelection] = useState<Selection | null>(null)
   const [activeFile, setActiveFile] = useState<string | null>(null)
@@ -228,12 +246,20 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
   const [tick, refresh]           = useReducer((n: number) => n + 1, 0)
   const [tooltip, setTooltip]         = useState<{ row: ComputedRow; x: number; y: number } | null>(null)
   const [lineTooltip, setLineTooltip] = useState<LineTooltip | null>(null)
+  const [branchStatus, setBranchStatus] = useState<{ name: string; ahead: number; behind: number; hasUncommitted: boolean; hasUntracked: boolean } | null>(null)
+  const [commitMsg, setCommitMsg]   = useState('')
+  const [committing, setCommitting] = useState(false)
+  const [commitError, setCommitError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!cwd) return
     let cancelled = false
     window.api.gitStatus(cwd, undefined, selection?.fullHash).then((data: GitData) => {
       if (!cancelled) setGit(data)
+    }).catch(() => {})
+    // Fetch branch status
+    window.api.gitBranchCurrent(cwd).then((status) => {
+      if (!cancelled) setBranchStatus(status)
     }).catch(() => {})
     return () => { cancelled = true }
   }, [cwd, selection, tick])
@@ -298,6 +324,169 @@ function RightPanel({ state, onToggle, cwd }: { state: 'open' | 'collapsed'; onT
           </svg>
         </button>
       </div>
+
+      {/* Branch status row */}
+      {branchStatus && (
+        <div className="flex items-center gap-2 px-3 h-8 border-b border-[#2a2a2a] bg-[#0D0D0D] flex-shrink-0">
+          <div
+            className={`w-[6px] h-[6px] rounded-full ${
+              branchStatus.hasUncommitted || branchStatus.hasUntracked ? 'bg-[#F59E0B]' : 'bg-tm-green'
+            }`}
+          />
+          <span
+            className={`text-[11px] font-medium flex-1 truncate ${
+              branchStatus.hasUncommitted || branchStatus.hasUntracked ? 'text-[#F59E0B]' : 'text-tm-green'
+            }`}
+            title={branchStatus.name}
+          >
+            {branchStatus.name}
+          </span>
+          {(branchStatus.hasUncommitted || branchStatus.hasUntracked) && (
+            <div className="px-[6px] py-[2px] rounded-[3px] bg-[#2D1F0A] border border-[#F59E0B]">
+              <span className="text-[9px] text-[#F59E0B]">
+                {git.files.length} uncommitted
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Action buttons row */}
+      {branchStatus && (
+        <div className="flex items-center gap-[6px] px-2 py-[6px] border-b border-[#2a2a2a] bg-[#0D0D0D] flex-shrink-0">
+          {session?.type === 'claude' && session?.worktreePath && (
+            <>
+              {session.usingWorktree && (
+                <button
+                  className="flex items-center gap-1 px-2 h-6 rounded border border-tm-green bg-tm-green/10 text-[11px] text-tm-green hover:bg-tm-green/20"
+                  title="Merge & close worktree"
+                  onClick={onMergeWorktree}
+                >
+                  Merge
+                </button>
+              )}
+              {session.usingWorktree ? (
+                <button
+                  className="flex items-center gap-1 px-2 h-6 rounded border border-[#444] bg-[#1A1A1A] text-[11px] text-tm-muted hover:text-tm-text hover:border-tm-muted"
+                  title="Switch terminal to main branch"
+                  onClick={onSwitchToMain}
+                >
+                  → main
+                </button>
+              ) : (
+                <button
+                  className="flex items-center gap-1 px-2 h-6 rounded border border-[#444] bg-[#1A1A1A] text-[11px] text-tm-muted hover:text-tm-text hover:border-tm-muted"
+                  title="Switch terminal back to worktree branch"
+                  onClick={onSwitchToBranch}
+                >
+                  → branch
+                </button>
+              )}
+            </>
+          )}
+          <button
+            className="flex items-center justify-center w-7 h-6 rounded border border-[#2a2a2a] bg-[#1A1A1A] text-[13px] text-tm-muted hover:text-tm-text"
+            title="Push"
+            onClick={async () => {
+              if (!cwd) return
+              try {
+                await window.api.gitPush(cwd)
+                refresh()
+              } catch (err) {
+                console.error('Push failed:', err)
+              }
+            }}
+          >
+            ↑
+          </button>
+          <button
+            className="flex items-center justify-center w-7 h-6 rounded border border-[#2a2a2a] bg-[#1A1A1A] text-[13px] text-tm-muted hover:text-tm-text"
+            title="Pull"
+            onClick={async () => {
+              if (!cwd) return
+              try {
+                await window.api.gitPull(cwd)
+                refresh()
+              } catch (err) {
+                console.error('Pull failed:', err)
+              }
+            }}
+          >
+            ↓
+          </button>
+          <button
+            className="flex items-center justify-center w-7 h-6 rounded border border-[#2a2a2a] bg-[#1A1A1A] text-[13px] text-tm-muted hover:text-tm-text"
+            title="Fetch"
+            onClick={async () => {
+              if (!cwd) return
+              try {
+                await window.api.gitFetch(cwd)
+                refresh()
+              } catch (err) {
+                console.error('Fetch failed:', err)
+              }
+            }}
+          >
+            ⟳
+          </button>
+          {(branchStatus.hasUncommitted || branchStatus.hasUntracked) && (
+            <button
+              className="flex items-center gap-1 px-2 h-6 rounded border border-[#F59E0B] bg-[#2D1F0A] text-[11px] text-[#F59E0B] hover:bg-[#3D2F1A]"
+              title="Stash changes"
+              onClick={async () => {
+                if (!cwd) return
+                try {
+                  await window.api.gitStash(cwd, 'save')
+                  refresh()
+                } catch (err) {
+                  console.error('Stash failed:', err)
+                }
+              }}
+            >
+              Stash
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Commit row */}
+      {branchStatus && (branchStatus.hasUncommitted || branchStatus.hasUntracked) && (
+        <div className="flex flex-col gap-[4px] px-2 py-[6px] border-b border-[#2a2a2a] bg-[#0D0D0D] flex-shrink-0">
+          <div className="flex items-center gap-[6px]">
+            <input
+              className="flex-1 h-6 px-2 rounded border border-[#2a2a2a] bg-[#111] text-[11px] text-tm-text placeholder-tm-dim focus:outline-none focus:border-[#444]"
+              placeholder="Commit message…"
+              value={commitMsg}
+              onChange={(e) => { setCommitMsg(e.target.value); setCommitError(null) }}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && commitMsg.trim() && !committing && cwd) {
+                  e.preventDefault()
+                  setCommitting(true); setCommitError(null)
+                  try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
+                  catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
+                  finally { setCommitting(false) }
+                }
+              }}
+            />
+            <button
+              className="flex items-center px-2 h-6 rounded border border-tm-green bg-tm-green/10 text-[11px] text-tm-green hover:bg-tm-green/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={!commitMsg.trim() || committing}
+              onClick={async () => {
+                if (!cwd || !commitMsg.trim() || committing) return
+                setCommitting(true); setCommitError(null)
+                try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
+                catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
+                finally { setCommitting(false) }
+              }}
+            >
+              {committing ? '…' : 'Commit'}
+            </button>
+          </div>
+          {commitError && (
+            <span className="text-[10px] text-[#F87171] leading-tight">{commitError}</span>
+          )}
+        </div>
+      )}
 
       {/* Tab row */}
       <div className="flex items-center flex-shrink-0 border-b border-tm-border bg-[#0D0D0D]" style={{ height: 32 }}>
@@ -461,6 +650,10 @@ export default function App() {
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
   const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
+  const [showSessionTypePicker, setShowSessionTypePicker] = useState(false)
+  const [sessionTypePickerWsId, setSessionTypePickerWsId] = useState<string | null>(null)
+  const [mergeDialogSessionId, setMergeDialogSessionId] = useState<string | null>(null)
+  const [mergeDialogHasUncommitted, setMergeDialogHasUncommitted] = useState(false)
   const [layoutPickerAnchor, setLayoutPickerAnchor] = useState<DOMRect | null>(null)
   const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(() => {
     const s = settings.sessionLayout
@@ -529,6 +722,7 @@ export default function App() {
       workspaceId: found.id,
       name:        'session_1',
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => prev.some((s) => s.id === session.id) ? prev : [...prev, session])
     setActiveSessionId(session.id)
@@ -556,6 +750,7 @@ export default function App() {
       workspaceId: ws.id,
       name:        `session_${n}`,
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => [...prev, session])
     setActiveSessionId(session.id)
@@ -594,15 +789,69 @@ export default function App() {
     if (!pending) return
     pendingSpawn.current.delete(sessionId)
     if (spawnedSessions.current.has(sessionId)) return
-    spawnedSessions.current.add(sessionId)
-    window.api.ptySpawn({
-      sessionId,
-      cwd:             pending.workspace.path,
-      model:           pending.session.model,
-      skipPermissions: settings.skipPermissions,
-      cols,
-      rows,
-    })
+
+    if (pending.session.type === 'file-viewer') {
+      spawnedSessions.current.add(sessionId)
+      window.api.ptySpawn({
+        sessionId,
+        cwd:             pending.workspace.path,
+        model:           pending.session.model,
+        skipPermissions: settings.skipPermissions,
+        cols,
+        rows,
+        sessionType:     pending.session.type,
+        filePath:        pending.session.filePath,
+      })
+      return
+    }
+
+    // For Claude sessions, create worktree in background, then spawn PTY
+    if (pending.session.type === 'claude') {
+      console.log(`[Worktree] Creating worktree for session ${sessionId}`)
+      // Create worktree asynchronously (non-blocking)
+      window.api.gitWorktreeCreate({
+        sessionId: pending.session.id,
+        workspaceId: pending.session.workspaceId,
+        workspacePath: pending.workspace.path,
+      }).then(({ worktreePath, branchName }) => {
+        console.log(`[Worktree] Created worktree for session ${sessionId} at ${worktreePath}`)
+        // Update session with worktree info
+        setSessions((prev) => {
+          console.log(`[Worktree] Updating session ${sessionId} with worktree info`)
+          return prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, worktreePath, branchName, usingWorktree: true }
+              : s
+          )
+        })
+
+        // Mark as spawned and spawn PTY with worktree path
+        spawnedSessions.current.add(sessionId)
+        console.log(`[Worktree] Spawning PTY for session ${sessionId}`)
+        window.api.ptySpawn({
+          sessionId,
+          cwd: worktreePath,
+          model:           pending.session.model,
+          skipPermissions: settings.skipPermissions,
+          cols,
+          rows,
+          sessionType:     pending.session.type,
+        })
+      }).catch((err) => {
+        console.error(`[Worktree] Failed to create worktree for session ${sessionId}:`, err)
+        // Fallback: spawn PTY with main workspace path
+        spawnedSessions.current.add(sessionId)
+        window.api.ptySpawn({
+          sessionId,
+          cwd: pending.workspace.path,
+          model:           pending.session.model,
+          skipPermissions: settings.skipPermissions,
+          cols,
+          rows,
+          sessionType:     pending.session.type,
+        })
+      })
+    }
   }, [settings.skipPermissions])
 
   function handleSelectWorkspace(ws: Workspace) {
@@ -620,6 +869,7 @@ export default function App() {
         workspaceId: ws.id,
         name:        `session_${n}`,
         model:       settings.defaultModel,
+        type:        'claude',
       }
       setSessions((prev) => [...prev, session])
       setActiveSessionId(session.id)
@@ -640,6 +890,11 @@ export default function App() {
   }
 
   function handleNewSession(wsId: string) {
+    setSessionTypePickerWsId(wsId)
+    setShowSessionTypePicker(true)
+  }
+
+  function handleCreateClaudeSession(wsId: string) {
     const ws = workspaces.find((w) => w.id === wsId)
     if (!ws) return
     const n = nextNumForWs(wsId)
@@ -648,6 +903,7 @@ export default function App() {
       workspaceId: wsId,
       name:        `session_${n}`,
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => [...prev, session])
     setActiveWsId(wsId)
@@ -655,10 +911,71 @@ export default function App() {
     spawnSession(session, ws)
   }
 
-  function handleDeleteSession(sessionId: string) {
+  function handleCreateFileSession(wsId: string, filePath: string) {
+    const ws = workspaces.find((w) => w.id === wsId)
+    if (!ws) return
+    const n = nextNumForWs(wsId)
+    const fileName = filePath.split(/[\\/]/).pop() || 'file'
+    const session: Session = {
+      id:          `${wsId}-s${n}`,
+      workspaceId: wsId,
+      name:        fileName,
+      model:       settings.defaultModel,
+      type:        'file-viewer',
+      filePath,
+    }
+    setSessions((prev) => [...prev, session])
+    setActiveWsId(wsId)
+    setActiveSessionId(session.id)
+    spawnSession(session, ws)
+  }
+
+  async function handleChangeFile(sessionId: string) {
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session || session.type !== 'file-viewer') return
+    const wsPath = workspaces.find(w => w.id === session.workspaceId)?.path
+    const filePath = await window.api.openFile(wsPath)
+    if (filePath) handleUpdateFileSession(sessionId, filePath)
+  }
+
+  function handleUpdateFileSession(sessionId: string, filePath: string) {
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session || session.type !== 'file-viewer') return
+
+    const fileName = filePath.split(/[\\/]/).pop() || 'file'
+    const updatedSession: Session = { ...session, name: fileName, filePath }
+
+    setSessions((prev) => prev.map((s) => s.id === sessionId ? updatedSession : s))
+
+    // Kill the old PTY and spawn a new one with the new file
+    window.api.ptyKill(sessionId)
+    spawnedSessions.current.delete(sessionId)
+    clearBuffer(sessionId)
+
+    const workspace = workspaces.find((w) => w.id === session.workspaceId)
+    if (workspace) {
+      spawnSession(updatedSession, workspace)
+    }
+  }
+
+  async function handleDeleteSession(sessionId: string) {
     const deletedSession = sessions.find((s) => s.id === sessionId)
     if (!deletedSession) return
 
+    // If session has a worktree, show merge dialog instead
+    if (deletedSession.worktreePath) {
+      // Check git status for uncommitted changes
+      try {
+        const status = await window.api.gitBranchCurrent(deletedSession.worktreePath)
+        setMergeDialogHasUncommitted(status.hasUncommitted || status.hasUntracked)
+      } catch {
+        setMergeDialogHasUncommitted(false)
+      }
+      setMergeDialogSessionId(sessionId)
+      return
+    }
+
+    // No worktree - proceed with normal cleanup
     window.api.ptyKill(sessionId)
     spawnedSessions.current.delete(sessionId)
     pendingSpawn.current.delete(sessionId)
@@ -684,6 +1001,147 @@ export default function App() {
 
       return next
     })
+  }
+
+  // ── Git Worktree ───────────────────────────────────────────────────────────
+  async function handleSwitchToMain() {
+    if (!activeSessionId) return
+    const session = sessions.find((s) => s.id === activeSessionId)
+    if (!session?.worktreePath) return
+    const workspace = workspaces.find((w) => w.id === session.workspaceId)
+    if (!workspace) return
+
+    await window.api.ptyChangeCwd(activeSessionId, workspace.path)
+    setSessions((prev) =>
+      prev.map((s) => s.id === activeSessionId ? { ...s, usingWorktree: false } : s)
+    )
+  }
+
+  async function handleSwitchToBranch() {
+    if (!activeSessionId) return
+    const session = sessions.find((s) => s.id === activeSessionId)
+    if (!session?.worktreePath) return
+
+    await window.api.ptyChangeCwd(activeSessionId, session.worktreePath)
+    setSessions((prev) =>
+      prev.map((s) => s.id === activeSessionId ? { ...s, usingWorktree: true } : s)
+    )
+  }
+
+  async function handleRequestMergeWorktree() {
+    if (!activeSessionId) return
+    const session = sessions.find((s) => s.id === activeSessionId)
+    if (!session || !session.worktreePath) return
+
+    // Check git status for uncommitted changes
+    try {
+      const status = await window.api.gitBranchCurrent(session.worktreePath)
+      setMergeDialogHasUncommitted(status.hasUncommitted || status.hasUntracked)
+    } catch {
+      setMergeDialogHasUncommitted(false)
+    }
+
+    setMergeDialogSessionId(activeSessionId)
+  }
+
+  async function handleMergeWorktree() {
+    if (!mergeDialogSessionId) return
+
+    const session = sessions.find((s) => s.id === mergeDialogSessionId)
+    if (!session || !session.worktreePath) return
+
+    const workspace = workspaces.find((w) => w.id === session.workspaceId)
+    if (!workspace) return
+
+    try {
+      await window.api.gitWorktreeMerge({
+        sessionId: session.id,
+        workspaceId: session.workspaceId,
+        workspacePath: workspace.path,
+        targetBranch: 'main',
+      })
+
+      // Kill PTY and delete session
+      window.api.ptyKill(mergeDialogSessionId)
+      spawnedSessions.current.delete(mergeDialogSessionId)
+      pendingSpawn.current.delete(mergeDialogSessionId)
+      clearBuffer(mergeDialogSessionId)
+
+      setSessions((prev) => {
+        const wsId = session.workspaceId
+        const otherWorkspaces = prev.filter((s) => s.workspaceId !== wsId)
+        const wsSessionsFiltered = prev.filter((s) => s.workspaceId === wsId && s.id !== mergeDialogSessionId)
+
+        // Renumber display names
+        const renumbered = wsSessionsFiltered.map((s, i) => ({
+          ...s,
+          name: s.type === 'file-viewer' ? s.name : `Session ${i + 1}`,
+        }))
+
+        const next = [...otherWorkspaces, ...renumbered]
+
+        // If deleted session was active, select the last remaining session
+        if (activeSessionId === mergeDialogSessionId) {
+          setActiveSessionId(renumbered[renumbered.length - 1]?.id ?? null)
+        }
+
+        return next
+      })
+
+      setMergeDialogSessionId(null)
+    } catch (err) {
+      console.error('Failed to merge worktree:', err)
+      alert(`Failed to merge worktree: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  async function handleDiscardWorktree() {
+    if (!mergeDialogSessionId) return
+
+    const session = sessions.find((s) => s.id === mergeDialogSessionId)
+    if (!session || !session.worktreePath) return
+
+    const workspace = workspaces.find((w) => w.id === session.workspaceId)
+    if (!workspace) return
+
+    try {
+      await window.api.gitWorktreeDelete({
+        sessionId: session.id,
+        workspacePath: workspace.path,
+      })
+
+      // Kill PTY and delete session
+      window.api.ptyKill(mergeDialogSessionId)
+      spawnedSessions.current.delete(mergeDialogSessionId)
+      pendingSpawn.current.delete(mergeDialogSessionId)
+      clearBuffer(mergeDialogSessionId)
+
+      setSessions((prev) => {
+        const wsId = session.workspaceId
+        const otherWorkspaces = prev.filter((s) => s.workspaceId !== wsId)
+        const wsSessionsFiltered = prev.filter((s) => s.workspaceId === wsId && s.id !== mergeDialogSessionId)
+
+        // Renumber display names
+        const renumbered = wsSessionsFiltered.map((s, i) => ({
+          ...s,
+          name: s.type === 'file-viewer' ? s.name : `Session ${i + 1}`,
+        }))
+
+        const next = [...otherWorkspaces, ...renumbered]
+
+        // If deleted session was active, select the last remaining session
+        if (activeSessionId === mergeDialogSessionId) {
+          setActiveSessionId(renumbered[renumbered.length - 1]?.id ?? null)
+        }
+
+        return next
+      })
+
+      setMergeDialogSessionId(null)
+    } catch (err) {
+      console.error('Failed to delete worktree:', err)
+      alert(`Failed to discard worktree: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   function handleLayoutChange(layout: SessionLayout) {
@@ -853,7 +1311,10 @@ export default function App() {
 
         {/* ── Content ───────────────────────────────────────────────────────── */}
         {(() => {
-          const slot = (n: number): string | null => paneAssignments[n] ?? null
+          const slot = (n: number): Session | null => {
+            const sid = paneAssignments[n]
+            return sid ? sessions.find(s => s.id === sid) || null : null
+          }
           const div  = (n: number) => <div key={n} className="w-px bg-tm-border flex-shrink-0" />
           const hdiv = (n: number) => <div key={n} className="h-px bg-tm-border flex-shrink-0" />
           const wsList = activeWsId ? wsSessions(activeWsId) : []
@@ -861,7 +1322,7 @@ export default function App() {
           const ph = (n: number) => (
             <PaneHeader
               key={`ph-${n}`}
-              sessionId={slot(n)}
+              sessionId={slot(n)?.id || null}
               sessions={wsList}
               workspaces={workspaces}
               isOpen={openDropdownPane === n}
@@ -879,7 +1340,7 @@ export default function App() {
 
           if (sessionLayout === 'single') return (
             <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-              <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
+              <TerminalPane session={activeSession} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
             </div>
           )
 
@@ -887,12 +1348,12 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
             </div>
           )
@@ -901,12 +1362,12 @@ export default function App() {
             <div className="flex flex-col flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-h-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
               {hdiv(0)}
               <div className="flex flex-col flex-1 min-h-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
             </div>
           )
@@ -915,18 +1376,18 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col min-w-0" style={{ flex: '0 0 60%' }}>
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 overflow-hidden min-w-0">
                 <div className="flex flex-col flex-1 min-h-0">
                   {ph(1)}
-                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(1)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
                 {hdiv(0)}
                 <div className="flex flex-col flex-1 min-h-0">
                   {ph(2)}
-                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(2)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
               </div>
             </div>
@@ -937,24 +1398,24 @@ export default function App() {
               <div className="flex flex-1 min-h-0">
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(0)}
-                  <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(0)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
                 {div(0)}
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(1)}
-                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(1)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
               </div>
               {hdiv(0)}
               <div className="flex flex-1 min-h-0">
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(2)}
-                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(2)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
                 {div(1)}
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(3)}
-                  <TerminalPane sessionId={slot(3)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(3)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
                 </div>
               </div>
             </div>
@@ -964,17 +1425,17 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
               {div(1)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(2)}
-                <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(2)} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
               </div>
             </div>
           )
@@ -984,7 +1445,11 @@ export default function App() {
         <RightPanel
           state={panelState}
           onToggle={() => setPanelState((p) => p === 'open' ? 'collapsed' : 'open')}
-          cwd={activeWs?.path ?? null}
+          cwd={(activeSession?.usingWorktree && activeSession?.worktreePath) ? activeSession.worktreePath : (activeWs?.path ?? null)}
+          session={activeSession}
+          onMergeWorktree={handleRequestMergeWorktree}
+          onSwitchToMain={handleSwitchToMain}
+          onSwitchToBranch={handleSwitchToBranch}
         />
       </div>
 
@@ -1041,6 +1506,44 @@ export default function App() {
           onClose={() => setShowLayoutPicker(false)}
         />
       )}
+
+      {showSessionTypePicker && sessionTypePickerWsId && (
+        <SessionTypeModal
+          onSelectClaude={() => {
+            setShowSessionTypePicker(false)
+            handleCreateClaudeSession(sessionTypePickerWsId)
+            setSessionTypePickerWsId(null)
+          }}
+          onSelectFile={async () => {
+            const wsId = sessionTypePickerWsId
+            setShowSessionTypePicker(false)
+            setSessionTypePickerWsId(null)
+            const wsPath = workspaces.find(w => w.id === wsId)?.path
+            const filePath = await window.api.openFile(wsPath)
+            if (filePath) handleCreateFileSession(wsId, filePath)
+          }}
+          onClose={() => {
+            setShowSessionTypePicker(false)
+            setSessionTypePickerWsId(null)
+          }}
+        />
+      )}
+
+      {mergeDialogSessionId && (() => {
+        const session = sessions.find((s) => s.id === mergeDialogSessionId)
+        if (!session || !session.branchName) return null
+        return (
+          <MergeWorktreeDialog
+            isOpen={true}
+            sessionName={session.name}
+            branchName={session.branchName}
+            hasUncommitted={mergeDialogHasUncommitted}
+            onMerge={handleMergeWorktree}
+            onDiscard={handleDiscardWorktree}
+            onCancel={() => setMergeDialogSessionId(null)}
+          />
+        )
+      })()}
     </div>
   )
 }

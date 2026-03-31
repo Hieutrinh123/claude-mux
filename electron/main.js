@@ -37,27 +37,78 @@ app.on('window-all-closed', () => {
   for (const [, proc] of ptySessions) {
     try { proc.kill() } catch {}
   }
+
+  // Clean up all worktrees on app close
+  cleanupAllWorktrees()
+
   if (process.platform !== 'darwin') app.quit()
 })
 
+// Clean up all .claude-worktrees directories
+function cleanupAllWorktrees() {
+  const { execFileSync } = require('child_process')
+  try {
+    // Get list of all worktrees
+    const output = execFileSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' })
+    const lines = output.split('\n')
+
+    // Find all worktrees in .claude-worktrees directories
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('worktree ')) {
+        const worktreePath = lines[i].substring('worktree '.length)
+        if (worktreePath.includes('.claude-worktrees')) {
+          try {
+            execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], { encoding: 'utf8' })
+            console.log('Cleaned up worktree:', worktreePath)
+          } catch (err) {
+            console.error('Failed to cleanup worktree:', worktreePath, err.message)
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // Ignore errors - might not be in a git repo
+    console.error('Failed to cleanup worktrees:', err.message)
+  }
+}
+
 // ── PTY ───────────────────────────────────────────────────────────────────────
 
-ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions, cols, rows }) => {
+ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions, cols, rows, sessionType, filePath }) => {
   if (ptySessions.has(sessionId)) return
 
   const env = { ...process.env }
   delete env.CLAUDECODE
   env.CLAUDE_MUX = '1'
 
-  const extraFlags = [
-    ...(model ? ['--model', model] : []),
-    ...(skipPermissions ? ['--dangerously-skip-permissions'] : []),
-  ]
+  let file, args
 
-  // On Windows use cmd.exe to run claude.cmd
-  const [file, args] = process.platform === 'win32'
-    ? ['cmd.exe', ['/c', 'claude', ...extraFlags]]
-    : ['claude', ...extraFlags]
+  if (sessionType === 'file-viewer') {
+    // For file viewer, spawn cat/bat to display file contents
+    // Try bat first (if available), fallback to cat
+    if (process.platform === 'win32') {
+      file = 'cmd.exe'
+      args = ['/c', 'type', filePath]
+    } else {
+      file = 'cat'
+      args = [filePath]
+    }
+  } else {
+    // Default: Claude session
+    const extraFlags = [
+      ...(model ? ['--model', model] : []),
+      ...(skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ]
+
+    // On Windows use cmd.exe to run claude.cmd
+    if (process.platform === 'win32') {
+      file = 'cmd.exe'
+      args = ['/c', 'claude', ...extraFlags]
+    } else {
+      file = 'claude'
+      args = extraFlags
+    }
+  }
 
   let proc
   try {
@@ -117,8 +168,17 @@ ipcMain.handle('claude:check', async () => {
 
 // ── Folder picker ──────────────────────────────────────────────────────────────
 
-ipcMain.handle('dialog:open-folder', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+ipcMain.handle('dialog:open-folder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+// ── File picker ────────────────────────────────────────────────────────────────
+
+ipcMain.handle('dialog:open-file', async (event, { defaultPath } = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win, { properties: ['openFile'], defaultPath })
   return result.canceled ? null : result.filePaths[0]
 })
 
@@ -233,4 +293,420 @@ ipcMain.handle('clipboard:save-image', async (_e, { buffer, ext }) => {
   } catch (err) {
     throw new Error(`Failed to save image: ${err.message}`)
   }
+})
+
+// ── File read ──────────────────────────────────────────────────────────────────
+
+ipcMain.handle('files:read', async (_e, { filePath }) => {
+  return fs.readFileSync(filePath, 'utf8')
+})
+
+// ── File list ──────────────────────────────────────────────────────────────────
+
+ipcMain.handle('files:list', async (_e, { cwd }) => {
+  try {
+    const files = []
+
+    function walkDir(dir, depth = 0) {
+      if (depth > 3) return // Limit depth to avoid huge lists
+
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        // Skip hidden files, node_modules, .git, etc.
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+
+        const fullPath = path.join(dir, entry.name)
+
+        if (entry.isDirectory()) {
+          walkDir(fullPath, depth + 1)
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).slice(1) // Remove leading dot
+          files.push({
+            name: entry.name,
+            path: fullPath,
+            ext: ext || 'txt'
+          })
+        }
+      }
+    }
+
+    walkDir(cwd)
+    return files.slice(0, 500) // Limit to 500 files max
+  } catch (err) {
+    console.error('Failed to list files:', err)
+    return []
+  }
+})
+
+// ── Git Worktree ───────────────────────────────────────────────────────────────
+
+// Session number management
+function getNextSessionNumber(workspacePath) {
+  const counterFile = path.join(workspacePath, '.claude-worktrees', '.session-counter')
+
+  try {
+    // Ensure directory exists
+    const worktreesDir = path.join(workspacePath, '.claude-worktrees')
+    if (!fs.existsSync(worktreesDir)) {
+      fs.mkdirSync(worktreesDir, { recursive: true })
+    }
+
+    // Read current counter
+    let counter = 1
+    if (fs.existsSync(counterFile)) {
+      const content = fs.readFileSync(counterFile, 'utf8').trim()
+      counter = parseInt(content) || 1
+    }
+
+    // Increment and save
+    const nextCounter = counter + 1
+    fs.writeFileSync(counterFile, String(nextCounter), 'utf8')
+
+    return counter
+  } catch (err) {
+    console.error('Failed to get session number:', err)
+    return Date.now() // Fallback to timestamp
+  }
+}
+
+function saveSessionMapping(workspacePath, sessionId, sessionNumber) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    let mappings = {}
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      mappings = JSON.parse(content)
+    }
+
+    mappings[sessionId] = sessionNumber
+    fs.writeFileSync(mappingFile, JSON.stringify(mappings, null, 2), 'utf8')
+  } catch (err) {
+    console.error('Failed to save session mapping:', err)
+  }
+}
+
+function getSessionNumber(workspacePath, sessionId) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      const mappings = JSON.parse(content)
+      return mappings[sessionId]
+    }
+  } catch (err) {
+    console.error('Failed to read session mapping:', err)
+  }
+
+  return null
+}
+
+function removeSessionMapping(workspacePath, sessionId) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      const mappings = JSON.parse(content)
+      delete mappings[sessionId]
+      fs.writeFileSync(mappingFile, JSON.stringify(mappings, null, 2), 'utf8')
+    }
+  } catch (err) {
+    console.error('Failed to remove session mapping:', err)
+  }
+}
+
+ipcMain.handle('git:worktree:create', async (_e, { sessionId, workspaceId, workspacePath }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    const worktreesDir = path.join(workspacePath, '.claude-worktrees')
+    const worktreePath = path.join(worktreesDir, `session_${sessionId}`)
+
+    // Use simplified session numbering
+    const sessionNumber = getNextSessionNumber(workspacePath)
+    const branchName = `claude-session/${sessionNumber}`
+
+    // Create .claude-worktrees directory if it doesn't exist
+    if (!fs.existsSync(worktreesDir)) {
+      fs.mkdirSync(worktreesDir, { recursive: true })
+    }
+
+    // First, try to remove any existing worktree at this path (cleanup from crashed sessions)
+    execFile('git', ['worktree', 'remove', worktreePath, '--force'],
+      { cwd: workspacePath },
+      () => {
+        // Ignore errors - worktree might not exist, which is fine
+
+        // Check if branch already exists, if so use -B to force recreate
+        execFile('git', ['rev-parse', '--verify', branchName],
+          { cwd: workspacePath },
+          (checkErr) => {
+            const branchExists = !checkErr
+            const flag = branchExists ? '-B' : '-b'
+
+            // Create worktree with new (or force-recreated) branch
+            execFile('git', ['worktree', 'add', flag, branchName, worktreePath],
+              { cwd: workspacePath },
+              (err, stdout, stderr) => {
+                if (err) {
+                  reject(new Error(`Failed to create worktree: ${stderr || err.message}`))
+                } else {
+                  // Save session mapping for later lookup
+                  saveSessionMapping(workspacePath, sessionId, sessionNumber)
+                  resolve({ worktreePath, branchName })
+                }
+              }
+            )
+          }
+        )
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:worktree:delete', async (_e, { sessionId, workspacePath }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
+
+    // Remove worktree
+    execFile('git', ['worktree', 'remove', worktreePath, '--force'],
+      { cwd: workspacePath },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`Failed to delete worktree: ${stderr || err.message}`))
+        } else {
+          // Clean up session mapping
+          removeSessionMapping(workspacePath, sessionId)
+          resolve({ success: true })
+        }
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, workspacePath, targetBranch }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    // Look up the session number from mapping
+    const sessionNumber = getSessionNumber(workspacePath, sessionId)
+    if (!sessionNumber) {
+      reject(new Error(`Session ${sessionId} not found in mapping`))
+      return
+    }
+
+    const branchName = `claude-session/${sessionNumber}`
+    const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
+
+    // Switch to target branch
+    execFile('git', ['checkout', targetBranch],
+      { cwd: workspacePath },
+      (err1) => {
+        if (err1) {
+          reject(new Error(`Failed to checkout ${targetBranch}: ${err1.message}`))
+          return
+        }
+
+        // Merge session branch
+        execFile('git', ['merge', branchName, '--no-ff'],
+          { cwd: workspacePath },
+          (err2, stdout, stderr) => {
+            if (err2) {
+              reject(new Error(`Failed to merge: ${stderr || err2.message}`))
+              return
+            }
+
+            // Delete worktree
+            execFile('git', ['worktree', 'remove', worktreePath, '--force'],
+              { cwd: workspacePath },
+              (err3) => {
+                if (err3) {
+                  console.error('Failed to delete worktree after merge:', err3)
+                }
+
+                // Delete branch
+                execFile('git', ['branch', '-d', branchName],
+                  { cwd: workspacePath },
+                  (err4) => {
+                    if (err4) {
+                      console.error('Failed to delete branch after merge:', err4)
+                    }
+                    // Clean up session mapping
+                    removeSessionMapping(workspacePath, sessionId)
+                    resolve({ success: true })
+                  }
+                )
+              }
+            )
+          }
+        )
+      }
+    )
+  })
+})
+
+// ── Git Actions ────────────────────────────────────────────────────────────────
+
+ipcMain.handle('git:commit', async (_e, { cwd, message }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    execFile('git', ['add', '-A'],
+      { cwd },
+      (err1) => {
+        if (err1) {
+          reject(new Error(`Failed to stage changes: ${err1.message}`))
+          return
+        }
+        execFile('git', ['commit', '-m', message],
+          { cwd, maxBuffer: 4 * 1024 * 1024 },
+          (err2, stdout, stderr) => {
+            if (err2) {
+              reject(new Error(`Failed to commit: ${stderr || err2.message}`))
+            } else {
+              resolve({ success: true, output: stdout })
+            }
+          }
+        )
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:push', async (_e, { cwd }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    execFile('git', ['push'],
+      { cwd, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`Push failed: ${stderr || err.message}`))
+        } else {
+          resolve({ success: true, output: stdout || stderr })
+        }
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:pull', async (_e, { cwd }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    execFile('git', ['pull'],
+      { cwd, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`Pull failed: ${stderr || err.message}`))
+        } else {
+          resolve({ success: true, output: stdout || stderr })
+        }
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:fetch', async (_e, { cwd }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    execFile('git', ['fetch', '--all'],
+      { cwd, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`Fetch failed: ${stderr || err.message}`))
+        } else {
+          resolve({ success: true, output: stdout || stderr })
+        }
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:stash', async (_e, { cwd, action }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    const args = action === 'pop' ? ['stash', 'pop'] :
+                 action === 'list' ? ['stash', 'list'] :
+                 ['stash', 'save', '--include-untracked']
+
+    execFile('git', args,
+      { cwd, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err && action !== 'list') {
+          reject(new Error(`Stash failed: ${stderr || err.message}`))
+        } else {
+          resolve({ success: true, output: stdout || stderr })
+        }
+      }
+    )
+  })
+})
+
+ipcMain.handle('git:branch:current', async (_e, { cwd }) => {
+  const { execFile } = require('child_process')
+
+  return new Promise((resolve, reject) => {
+    // Get current branch name
+    execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd },
+      (err1, stdout1) => {
+        if (err1) {
+          reject(new Error(`Failed to get branch: ${err1.message}`))
+          return
+        }
+
+        const branchName = stdout1.trim()
+
+        // Get status (ahead/behind)
+        execFile('git', ['status', '--porcelain', '--branch'],
+          { cwd },
+          (err2, stdout2) => {
+            const statusLine = stdout2.split('\n')[0] || ''
+            const aheadMatch = statusLine.match(/ahead (\d+)/)
+            const behindMatch = statusLine.match(/behind (\d+)/)
+            const ahead = aheadMatch ? parseInt(aheadMatch[1]) : 0
+            const behind = behindMatch ? parseInt(behindMatch[1]) : 0
+
+            // Check for uncommitted changes
+            const hasUncommitted = stdout2.trim().split('\n').length > 1
+            const hasUntracked = /^\?\?/m.test(stdout2)
+
+            resolve({
+              name: branchName,
+              ahead,
+              behind,
+              hasUncommitted,
+              hasUntracked
+            })
+          }
+        )
+      }
+    )
+  })
+})
+
+// ── PTY Change CWD ─────────────────────────────────────────────────────────────
+
+ipcMain.handle('pty:change-cwd', async (_e, { sessionId, cwd }) => {
+  const proc = ptySessions.get(sessionId)
+  if (!proc) {
+    throw new Error(`No PTY session found for ${sessionId}`)
+  }
+
+  // Send cd command to PTY
+  const cdCommand = process.platform === 'win32'
+    ? `cd /d "${cwd}"\r`
+    : `cd "${cwd}"\n`
+
+  proc.write(cdCommand)
+
+  return { success: true }
 })
