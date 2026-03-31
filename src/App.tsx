@@ -8,6 +8,8 @@ import NewWorkspaceModal from './modals/NewWorkspaceModal'
 import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 import LayoutPickerModal from './modals/LayoutPickerModal'
+import SessionTypeModal from './modals/SessionTypeModal'
+import FilePickerModal from './modals/FilePickerModal'
 import PaneHeader from './components/PaneHeader'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
@@ -461,6 +463,11 @@ export default function App() {
   const [showNewWorkspace, setShowNewWorkspace]   = useState(false)
   const [deleteWsId, setDeleteWsId]               = useState<string | null>(null)
   const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
+  const [showSessionTypePicker, setShowSessionTypePicker] = useState(false)
+  const [sessionTypePickerWsId, setSessionTypePickerWsId] = useState<string | null>(null)
+  const [showFilePicker, setShowFilePicker]       = useState(false)
+  const [filePickerWsId, setFilePickerWsId]       = useState<string | null>(null)
+  const [changingFileSessionId, setChangingFileSessionId] = useState<string | null>(null)
   const [layoutPickerAnchor, setLayoutPickerAnchor] = useState<DOMRect | null>(null)
   const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(() => {
     const s = settings.sessionLayout
@@ -529,6 +536,7 @@ export default function App() {
       workspaceId: found.id,
       name:        'session_1',
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => prev.some((s) => s.id === session.id) ? prev : [...prev, session])
     setActiveSessionId(session.id)
@@ -602,6 +610,8 @@ export default function App() {
       skipPermissions: settings.skipPermissions,
       cols,
       rows,
+      sessionType:     pending.session.type,
+      filePath:        pending.session.type === 'file-viewer' ? pending.session.filePath : undefined,
     })
   }, [settings.skipPermissions])
 
@@ -620,6 +630,7 @@ export default function App() {
         workspaceId: ws.id,
         name:        `session_${n}`,
         model:       settings.defaultModel,
+        type:        'claude',
       }
       setSessions((prev) => [...prev, session])
       setActiveSessionId(session.id)
@@ -640,6 +651,11 @@ export default function App() {
   }
 
   function handleNewSession(wsId: string) {
+    setSessionTypePickerWsId(wsId)
+    setShowSessionTypePicker(true)
+  }
+
+  function handleCreateClaudeSession(wsId: string) {
     const ws = workspaces.find((w) => w.id === wsId)
     if (!ws) return
     const n = nextNumForWs(wsId)
@@ -648,11 +664,61 @@ export default function App() {
       workspaceId: wsId,
       name:        `session_${n}`,
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => [...prev, session])
     setActiveWsId(wsId)
     setActiveSessionId(session.id)
     spawnSession(session, ws)
+  }
+
+  function handleCreateFileSession(wsId: string, filePath: string) {
+    const ws = workspaces.find((w) => w.id === wsId)
+    if (!ws) return
+    const n = nextNumForWs(wsId)
+    const fileName = filePath.split(/[\\/]/).pop() || 'file'
+    const session: Session = {
+      id:          `${wsId}-s${n}`,
+      workspaceId: wsId,
+      name:        fileName,
+      model:       settings.defaultModel,
+      type:        'file-viewer',
+      filePath,
+    }
+    setSessions((prev) => [...prev, session])
+    setActiveWsId(wsId)
+    setActiveSessionId(session.id)
+    spawnSession(session, ws)
+  }
+
+  function handleChangeFile(sessionId: string) {
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session || session.type !== 'file-viewer') return
+    setFilePickerWsId(session.workspaceId)
+    setChangingFileSessionId(sessionId)
+    setShowFilePicker(true)
+  }
+
+  function handleUpdateFileSession(sessionId: string, filePath: string) {
+    const fileName = filePath.split(/[\\/]/).pop() || 'file'
+    setSessions((prev) => prev.map((s) => {
+      if (s.id === sessionId && s.type === 'file-viewer') {
+        return { ...s, name: fileName, filePath }
+      }
+      return s
+    }))
+
+    // Kill the old PTY and spawn a new one with the new file
+    window.api.ptyKill(sessionId)
+    spawnedSessions.current.delete(sessionId)
+    clearBuffer(sessionId)
+
+    const session = sessions.find((s) => s.id === sessionId)
+    const workspace = workspaces.find((w) => w.id === session?.workspaceId)
+    if (session && workspace) {
+      const updatedSession = { ...session, filePath, name: fileName } as Session
+      spawnSession(updatedSession, workspace)
+    }
   }
 
   function handleDeleteSession(sessionId: string) {
@@ -853,7 +919,10 @@ export default function App() {
 
         {/* ── Content ───────────────────────────────────────────────────────── */}
         {(() => {
-          const slot = (n: number): string | null => paneAssignments[n] ?? null
+          const slot = (n: number): Session | null => {
+            const sid = paneAssignments[n]
+            return sid ? sessions.find(s => s.id === sid) || null : null
+          }
           const div  = (n: number) => <div key={n} className="w-px bg-tm-border flex-shrink-0" />
           const hdiv = (n: number) => <div key={n} className="h-px bg-tm-border flex-shrink-0" />
           const wsList = activeWsId ? wsSessions(activeWsId) : []
@@ -861,7 +930,7 @@ export default function App() {
           const ph = (n: number) => (
             <PaneHeader
               key={`ph-${n}`}
-              sessionId={slot(n)}
+              sessionId={slot(n)?.id || null}
               sessions={wsList}
               workspaces={workspaces}
               isOpen={openDropdownPane === n}
@@ -879,7 +948,7 @@ export default function App() {
 
           if (sessionLayout === 'single') return (
             <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-              <TerminalPane sessionId={activeSessionId} onReady={handleTerminalReady} />
+              <TerminalPane session={activeSession} onReady={handleTerminalReady} onChangeFile={handleChangeFile} />
             </div>
           )
 
@@ -1039,6 +1108,47 @@ export default function App() {
           anchor={layoutPickerAnchor}
           onSelect={handleLayoutChange}
           onClose={() => setShowLayoutPicker(false)}
+        />
+      )}
+
+      {showSessionTypePicker && sessionTypePickerWsId && (
+        <SessionTypeModal
+          onSelectClaude={() => {
+            setShowSessionTypePicker(false)
+            handleCreateClaudeSession(sessionTypePickerWsId)
+            setSessionTypePickerWsId(null)
+          }}
+          onSelectFile={() => {
+            setShowSessionTypePicker(false)
+            setFilePickerWsId(sessionTypePickerWsId)
+            setShowFilePicker(true)
+            setSessionTypePickerWsId(null)
+          }}
+          onClose={() => {
+            setShowSessionTypePicker(false)
+            setSessionTypePickerWsId(null)
+          }}
+        />
+      )}
+
+      {showFilePicker && filePickerWsId && (
+        <FilePickerModal
+          workspacePath={workspaces.find((w) => w.id === filePickerWsId)?.path || ''}
+          onSelect={(filePath) => {
+            setShowFilePicker(false)
+            if (changingFileSessionId) {
+              handleUpdateFileSession(changingFileSessionId, filePath)
+              setChangingFileSessionId(null)
+            } else {
+              handleCreateFileSession(filePickerWsId, filePath)
+            }
+            setFilePickerWsId(null)
+          }}
+          onClose={() => {
+            setShowFilePicker(false)
+            setFilePickerWsId(null)
+            setChangingFileSessionId(null)
+          }}
         />
       )}
     </div>

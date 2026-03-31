@@ -1,6 +1,6 @@
 interface Window {
   api: {
-    ptySpawn: (opts: { sessionId: string; cwd: string; model: string; skipPermissions?: boolean; cols?: number; rows?: number }) => Promise<void>
+    ptySpawn: (opts: { sessionId: string; cwd: string; model: string; skipPermissions?: boolean; cols?: number; rows?: number; sessionType?: string; filePath?: string }) => Promise<void>
     ptyWrite: (sessionId: string, data: string) => void
     ptyResize: (sessionId: string, cols: number, rows: number) => void
     ptyKill: (sessionId: string) => void
@@ -15,5 +15,6 @@ interface Window {
       fileDiffs: Record<string, { patch: string; added: number; removed: number }>
     }>
     saveClipboardImage: (buffer: number[], ext: string) => Promise<string>
+    listFiles: (cwd: string) => Promise<{ name: string; path: string; ext: string }[]>
   }
 }

@@ -26,4 +26,5 @@ contextBridge.exposeInMainWorld('api', {
   openFolder:  () => ipcRenderer.invoke('dialog:open-folder'),
   gitStatus:   (cwd, file, commitHash) => ipcRenderer.invoke('git:status', { cwd, file, commitHash }),
   saveClipboardImage: (buffer, ext) => ipcRenderer.invoke('clipboard:save-image', { buffer, ext }),
+  listFiles: (cwd) => ipcRenderer.invoke('files:list', { cwd }),
 })

@@ -42,22 +42,41 @@ app.on('window-all-closed', () => {
 
 // ── PTY ───────────────────────────────────────────────────────────────────────
 
-ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions, cols, rows }) => {
+ipcMain.handle('pty:spawn', (event, { sessionId, cwd, model, skipPermissions, cols, rows, sessionType, filePath }) => {
   if (ptySessions.has(sessionId)) return
 
   const env = { ...process.env }
   delete env.CLAUDECODE
   env.CLAUDE_MUX = '1'
 
-  const extraFlags = [
-    ...(model ? ['--model', model] : []),
-    ...(skipPermissions ? ['--dangerously-skip-permissions'] : []),
-  ]
+  let file, args
 
-  // On Windows use cmd.exe to run claude.cmd
-  const [file, args] = process.platform === 'win32'
-    ? ['cmd.exe', ['/c', 'claude', ...extraFlags]]
-    : ['claude', ...extraFlags]
+  if (sessionType === 'file-viewer') {
+    // For file viewer, spawn cat/bat to display file contents
+    // Try bat first (if available), fallback to cat
+    if (process.platform === 'win32') {
+      file = 'cmd.exe'
+      args = ['/c', 'type', filePath]
+    } else {
+      file = 'cat'
+      args = [filePath]
+    }
+  } else {
+    // Default: Claude session
+    const extraFlags = [
+      ...(model ? ['--model', model] : []),
+      ...(skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ]
+
+    // On Windows use cmd.exe to run claude.cmd
+    if (process.platform === 'win32') {
+      file = 'cmd.exe'
+      args = ['/c', 'claude', ...extraFlags]
+    } else {
+      file = 'claude'
+      args = extraFlags
+    }
+  }
 
   let proc
   try {
@@ -232,5 +251,43 @@ ipcMain.handle('clipboard:save-image', async (_e, { buffer, ext }) => {
     return filePath
   } catch (err) {
     throw new Error(`Failed to save image: ${err.message}`)
+  }
+})
+
+// ── File list ──────────────────────────────────────────────────────────────────
+
+ipcMain.handle('files:list', async (_e, { cwd }) => {
+  try {
+    const files = []
+
+    function walkDir(dir, depth = 0) {
+      if (depth > 3) return // Limit depth to avoid huge lists
+
+      const entries = fs.readdirSync(dir, { withFileTypes: true })
+
+      for (const entry of entries) {
+        // Skip hidden files, node_modules, .git, etc.
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+
+        const fullPath = path.join(dir, entry.name)
+
+        if (entry.isDirectory()) {
+          walkDir(fullPath, depth + 1)
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).slice(1) // Remove leading dot
+          files.push({
+            name: entry.name,
+            path: fullPath,
+            ext: ext || 'txt'
+          })
+        }
+      }
+    }
+
+    walkDir(cwd)
+    return files.slice(0, 500) // Limit to 500 files max
+  } catch (err) {
+    console.error('Failed to list files:', err)
+    return []
   }
 })

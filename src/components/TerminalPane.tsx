@@ -21,10 +21,14 @@ export function clearBuffer(sid: string) {
 }
 
 
-export default function TerminalPane({ sessionId, onReady }: {
-  sessionId: string | null
+import type { Session } from '../types'
+
+export default function TerminalPane({ session, onReady, onChangeFile }: {
+  session: Session | null
   onReady?: (sessionId: string, cols: number, rows: number) => void
+  onChangeFile?: (sessionId: string) => void
 }) {
+  const sessionId = session?.id || null
   const containerRef = useRef<HTMLDivElement>(null)
   const readyFired = useRef<Set<string>>(new Set())
 
@@ -292,12 +296,37 @@ export default function TerminalPane({ sessionId, onReady }: {
     )
   }
 
+  const isFileViewer = session?.type === 'file-viewer'
+  const filePath = isFileViewer && session.type === 'file-viewer' ? session.filePath : ''
+  const fileName = filePath.split(/[\\/]/).pop() || ''
+  const dirPath = filePath.substring(0, filePath.lastIndexOf('/') + 1) || filePath.substring(0, filePath.lastIndexOf('\\') + 1)
+
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 overflow-hidden selectable"
-      style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0, paddingTop: 4 }}
-      onClick={() => containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()}
-    />
+    <>
+      {isFileViewer && (
+        <div className="flex items-center justify-between h-12 px-4 gap-3 bg-tm-surface border-b border-tm-border">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] text-tm-green font-mono font-semibold">{fileName}</span>
+            <span className="text-[10px] text-tm-border font-mono">//</span>
+            <span className="text-[10px] text-tm-muted font-mono">{dirPath}</span>
+          </div>
+          <button
+            onClick={() => onChangeFile?.(sessionId)}
+            className="flex items-center gap-1.5 h-[26px] px-2.5 bg-tm-green hover:bg-[#0EA572] transition-colors"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-tm-bg">
+              <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
+            </svg>
+            <span className="text-[10px] text-tm-bg font-mono font-semibold">change_file</span>
+          </button>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-hidden selectable"
+        style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0, paddingTop: 4 }}
+        onClick={() => containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()}
+      />
+    </>
   )
 }
