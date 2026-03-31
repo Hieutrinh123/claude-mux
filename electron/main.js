@@ -44,31 +44,38 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+// Force-remove a worktree directory, falling back to fs.rmSync on Windows permission errors
+function forceRemoveWorktree(worktreePath, cwd) {
+  const { execFileSync } = require('child_process')
+  try {
+    execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], { cwd, encoding: 'utf8' })
+  } catch {
+    // Fallback: delete the directory directly then prune git's metadata
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true })
+      execFileSync('git', ['worktree', 'prune'], { cwd, encoding: 'utf8' })
+    } catch (err2) {
+      console.error('Failed to force-remove worktree:', worktreePath, err2.message)
+    }
+  }
+}
+
 // Clean up all .claude-worktrees directories
 function cleanupAllWorktrees() {
   const { execFileSync } = require('child_process')
   try {
-    // Get list of all worktrees
     const output = execFileSync('git', ['worktree', 'list', '--porcelain'], { encoding: 'utf8' })
     const lines = output.split('\n')
-
-    // Find all worktrees in .claude-worktrees directories
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].startsWith('worktree ')) {
         const worktreePath = lines[i].substring('worktree '.length)
         if (worktreePath.includes('.claude-worktrees')) {
-          try {
-            execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], { encoding: 'utf8' })
-            console.log('Cleaned up worktree:', worktreePath)
-          } catch (err) {
-            console.error('Failed to cleanup worktree:', worktreePath, err.message)
-          }
+          forceRemoveWorktree(worktreePath, path.dirname(path.dirname(worktreePath)))
         }
       }
     }
   } catch (err) {
-    // Ignore errors - might not be in a git repo
-    console.error('Failed to cleanup worktrees:', err.message)
+    console.error('Failed to list worktrees on cleanup:', err.message)
   }
 }
 
@@ -468,25 +475,10 @@ ipcMain.handle('git:worktree:create', async (_e, { sessionId, workspaceId, works
 })
 
 ipcMain.handle('git:worktree:delete', async (_e, { sessionId, workspacePath }) => {
-  const { execFile } = require('child_process')
-
-  return new Promise((resolve, reject) => {
-    const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
-
-    // Remove worktree
-    execFile('git', ['worktree', 'remove', worktreePath, '--force'],
-      { cwd: workspacePath },
-      (err, stdout, stderr) => {
-        if (err) {
-          reject(new Error(`Failed to delete worktree: ${stderr || err.message}`))
-        } else {
-          // Clean up session mapping
-          removeSessionMapping(workspacePath, sessionId)
-          resolve({ success: true })
-        }
-      }
-    )
-  })
+  const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
+  forceRemoveWorktree(worktreePath, workspacePath)
+  removeSessionMapping(workspacePath, sessionId)
+  return { success: true }
 })
 
 ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, workspacePath, targetBranch }) => {
@@ -521,26 +513,18 @@ ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, worksp
               return
             }
 
-            // Delete worktree
-            execFile('git', ['worktree', 'remove', worktreePath, '--force'],
+            // Delete worktree (Windows-safe fallback)
+            forceRemoveWorktree(worktreePath, workspacePath)
+
+            // Delete branch
+            execFile('git', ['branch', '-d', branchName],
               { cwd: workspacePath },
               (err3) => {
                 if (err3) {
-                  console.error('Failed to delete worktree after merge:', err3)
+                  console.error('Failed to delete branch after merge:', err3)
                 }
-
-                // Delete branch
-                execFile('git', ['branch', '-d', branchName],
-                  { cwd: workspacePath },
-                  (err4) => {
-                    if (err4) {
-                      console.error('Failed to delete branch after merge:', err4)
-                    }
-                    // Clean up session mapping
-                    removeSessionMapping(workspacePath, sessionId)
-                    resolve({ success: true })
-                  }
-                )
+                removeSessionMapping(workspacePath, sessionId)
+                resolve({ success: true })
               }
             )
           }
