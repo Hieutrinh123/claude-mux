@@ -18,5 +18,21 @@ interface Window {
     saveClipboardImage: (buffer: number[], ext: string) => Promise<string>
     readFile:  (filePath: string) => Promise<string>
     listFiles: (cwd: string) => Promise<{ name: string; path: string; ext: string }[]>
+
+    // Git Worktree
+    gitWorktreeCreate: (opts: { sessionId: string; workspaceId: string; workspacePath: string }) => Promise<{ worktreePath: string; branchName: string }>
+    gitWorktreeDelete: (opts: { sessionId: string; workspacePath: string }) => Promise<{ success: boolean }>
+    gitWorktreeMerge:  (opts: { sessionId: string; workspaceId: string; workspacePath: string; targetBranch: string }) => Promise<{ success: boolean }>
+
+    // Git Actions
+    gitCommit:        (cwd: string, message: string) => Promise<{ success: boolean; output: string }>
+    gitPush:          (cwd: string) => Promise<{ success: boolean; output: string }>
+    gitPull:          (cwd: string) => Promise<{ success: boolean; output: string }>
+    gitFetch:         (cwd: string) => Promise<{ success: boolean; output: string }>
+    gitStash:         (cwd: string, action: 'save' | 'pop' | 'list') => Promise<{ success: boolean; output: string }>
+    gitBranchCurrent: (cwd: string) => Promise<{ name: string; ahead: number; behind: number; hasUncommitted: boolean; hasUntracked: boolean }>
+
+    // PTY
+    ptyChangeCwd: (sessionId: string, cwd: string) => Promise<{ success: boolean }>
   }
 }

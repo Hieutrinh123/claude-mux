@@ -14,6 +14,9 @@ export type Session = {
   workspaceId: string
   name: string
   model: string
+  worktreePath?: string
+  branchName?: string
+  usingWorktree?: boolean  // false = switched to main, worktree still exists
 } & (
   | { type: 'claude' }
   | { type: 'file-viewer'; filePath: string }
