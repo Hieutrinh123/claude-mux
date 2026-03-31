@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -29,11 +29,25 @@ export default function TerminalPane({ session, onReady, onChangeFile }: {
   onChangeFile?: (sessionId: string) => void
 }) {
   const sessionId = session?.id || null
+  const isFileViewer = session?.type === 'file-viewer'
+  const filePath = isFileViewer && session.type === 'file-viewer' ? session.filePath : null
+
   const containerRef = useRef<HTMLDivElement>(null)
   const readyFired = useRef<Set<string>>(new Set())
+  const [fileContent, setFileContent] = useState<string | null>(null)
 
+  // Load file content for file-viewer sessions
   useEffect(() => {
-    if (!sessionId) return
+    if (!filePath) return
+    setFileContent(null)
+    window.api.readFile(filePath)
+      .then(setFileContent)
+      .catch(() => setFileContent('Error: could not read file.'))
+  }, [filePath])
+
+  // Terminal effect — skip for file-viewer sessions
+  useEffect(() => {
+    if (!sessionId || isFileViewer) return
     const sid = sessionId
     let disposed = false
     let term: XTerm | null = null
@@ -296,23 +310,21 @@ export default function TerminalPane({ session, onReady, onChangeFile }: {
     )
   }
 
-  const isFileViewer = session?.type === 'file-viewer'
-  const filePath = isFileViewer && session.type === 'file-viewer' ? session.filePath : ''
-  const fileName = filePath.split(/[\\/]/).pop() || ''
-  const dirPath = filePath.substring(0, filePath.lastIndexOf('/') + 1) || filePath.substring(0, filePath.lastIndexOf('\\') + 1)
-
-  return (
-    <>
-      {isFileViewer && (
-        <div className="flex items-center justify-between h-12 px-4 gap-3 bg-tm-surface border-b border-tm-border">
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] text-tm-green font-mono font-semibold">{fileName}</span>
-            <span className="text-[10px] text-tm-border font-mono">//</span>
-            <span className="text-[10px] text-tm-muted font-mono">{dirPath}</span>
+  // ── File viewer ───────────────────────────────────────────────────────────────
+  if (isFileViewer && filePath) {
+    const fileName = filePath.split(/[\\/]/).pop() || ''
+    const dirPath = filePath.substring(0, filePath.lastIndexOf('/') + 1) || filePath.substring(0, filePath.lastIndexOf('\\') + 1)
+    return (
+      <div className="flex flex-col flex-1 overflow-hidden">
+        <div className="flex items-center justify-between h-12 px-4 gap-3 bg-tm-surface border-b border-tm-border flex-shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="text-[11px] text-tm-green font-mono font-semibold truncate">{fileName}</span>
+            <span className="text-[10px] text-tm-border font-mono flex-shrink-0">//</span>
+            <span className="text-[10px] text-tm-muted font-mono truncate">{dirPath}</span>
           </div>
           <button
             onClick={() => onChangeFile?.(sessionId)}
-            className="flex items-center gap-1.5 h-[26px] px-2.5 bg-tm-green hover:bg-[#0EA572] transition-colors"
+            className="flex items-center gap-1.5 h-[26px] px-2.5 bg-tm-green hover:bg-[#0EA572] transition-colors flex-shrink-0"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-tm-bg">
               <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
@@ -320,13 +332,23 @@ export default function TerminalPane({ session, onReady, onChangeFile }: {
             <span className="text-[10px] text-tm-bg font-mono font-semibold">change_file</span>
           </button>
         </div>
-      )}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-hidden selectable"
-        style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0, paddingTop: 4 }}
-        onClick={() => containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()}
-      />
-    </>
+        <div className="flex-1 overflow-auto" style={{ background: '#0A0A0A' }}>
+          {fileContent === null
+            ? <div className="flex items-center justify-center h-full"><span className="text-tm-dim text-xs">loading…</span></div>
+            : <pre className="p-4 text-xs text-[#FAFAFA] font-mono leading-5 whitespace-pre-wrap break-words">{fileContent}</pre>
+          }
+        </div>
+      </div>
+    )
+  }
+
+  // ── Terminal (Claude session) ─────────────────────────────────────────────────
+  return (
+    <div
+      ref={containerRef}
+      className="flex-1 overflow-hidden selectable"
+      style={{ background: '#0A0A0A', minWidth: 0, minHeight: 0, paddingTop: 4 }}
+      onClick={() => containerRef.current?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()}
+    />
   )
 }

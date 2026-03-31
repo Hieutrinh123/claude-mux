@@ -9,7 +9,6 @@ import ModelPicker from './modals/ModelPicker'
 import DeleteWorkspaceDialog from './modals/DeleteWorkspaceDialog'
 import LayoutPickerModal from './modals/LayoutPickerModal'
 import SessionTypeModal from './modals/SessionTypeModal'
-import FilePickerModal from './modals/FilePickerModal'
 import PaneHeader from './components/PaneHeader'
 
 // ── RightPanel ────────────────────────────────────────────────────────────────
@@ -465,9 +464,6 @@ export default function App() {
   const [showLayoutPicker, setShowLayoutPicker]   = useState(false)
   const [showSessionTypePicker, setShowSessionTypePicker] = useState(false)
   const [sessionTypePickerWsId, setSessionTypePickerWsId] = useState<string | null>(null)
-  const [showFilePicker, setShowFilePicker]       = useState(false)
-  const [filePickerWsId, setFilePickerWsId]       = useState<string | null>(null)
-  const [changingFileSessionId, setChangingFileSessionId] = useState<string | null>(null)
   const [layoutPickerAnchor, setLayoutPickerAnchor] = useState<DOMRect | null>(null)
   const [sessionLayout, setSessionLayout]         = useState<SessionLayout>(() => {
     const s = settings.sessionLayout
@@ -564,6 +560,7 @@ export default function App() {
       workspaceId: ws.id,
       name:        `session_${n}`,
       model:       settings.defaultModel,
+      type:        'claude',
     }
     setSessions((prev) => [...prev, session])
     setActiveSessionId(session.id)
@@ -603,6 +600,7 @@ export default function App() {
     pendingSpawn.current.delete(sessionId)
     if (spawnedSessions.current.has(sessionId)) return
     spawnedSessions.current.add(sessionId)
+    if (pending.session.type === 'file-viewer') return
     window.api.ptySpawn({
       sessionId,
       cwd:             pending.workspace.path,
@@ -691,12 +689,11 @@ export default function App() {
     spawnSession(session, ws)
   }
 
-  function handleChangeFile(sessionId: string) {
+  async function handleChangeFile(sessionId: string) {
     const session = sessions.find((s) => s.id === sessionId)
     if (!session || session.type !== 'file-viewer') return
-    setFilePickerWsId(session.workspaceId)
-    setChangingFileSessionId(sessionId)
-    setShowFilePicker(true)
+    const filePath = await window.api.openFile()
+    if (filePath) handleUpdateFileSession(sessionId, filePath)
   }
 
   function handleUpdateFileSession(sessionId: string, filePath: string) {
@@ -954,12 +951,12 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} />
               </div>
             </div>
           )
@@ -968,12 +965,12 @@ export default function App() {
             <div className="flex flex-col flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-h-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} />
               </div>
               {hdiv(0)}
               <div className="flex flex-col flex-1 min-h-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} />
               </div>
             </div>
           )
@@ -982,18 +979,18 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col min-w-0" style={{ flex: '0 0 60%' }}>
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 overflow-hidden min-w-0">
                 <div className="flex flex-col flex-1 min-h-0">
                   {ph(1)}
-                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(1)} onReady={handleTerminalReady} />
                 </div>
                 {hdiv(0)}
                 <div className="flex flex-col flex-1 min-h-0">
                   {ph(2)}
-                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(2)} onReady={handleTerminalReady} />
                 </div>
               </div>
             </div>
@@ -1004,24 +1001,24 @@ export default function App() {
               <div className="flex flex-1 min-h-0">
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(0)}
-                  <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(0)} onReady={handleTerminalReady} />
                 </div>
                 {div(0)}
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(1)}
-                  <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(1)} onReady={handleTerminalReady} />
                 </div>
               </div>
               {hdiv(0)}
               <div className="flex flex-1 min-h-0">
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(2)}
-                  <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(2)} onReady={handleTerminalReady} />
                 </div>
                 {div(1)}
                 <div className="flex flex-col flex-1 min-w-0">
                   {ph(3)}
-                  <TerminalPane sessionId={slot(3)} onReady={handleTerminalReady} />
+                  <TerminalPane session={slot(3)} onReady={handleTerminalReady} />
                 </div>
               </div>
             </div>
@@ -1031,17 +1028,17 @@ export default function App() {
             <div className="flex flex-1 overflow-hidden min-w-0">
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(0)}
-                <TerminalPane sessionId={slot(0)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(0)} onReady={handleTerminalReady} />
               </div>
               {div(0)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(1)}
-                <TerminalPane sessionId={slot(1)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(1)} onReady={handleTerminalReady} />
               </div>
               {div(1)}
               <div className="flex flex-col flex-1 min-w-0">
                 {ph(2)}
-                <TerminalPane sessionId={slot(2)} onReady={handleTerminalReady} />
+                <TerminalPane session={slot(2)} onReady={handleTerminalReady} />
               </div>
             </div>
           )
@@ -1116,36 +1113,16 @@ export default function App() {
             handleCreateClaudeSession(sessionTypePickerWsId)
             setSessionTypePickerWsId(null)
           }}
-          onSelectFile={() => {
+          onSelectFile={async () => {
+            const wsId = sessionTypePickerWsId
             setShowSessionTypePicker(false)
-            setFilePickerWsId(sessionTypePickerWsId)
-            setShowFilePicker(true)
             setSessionTypePickerWsId(null)
+            const filePath = await window.api.openFile()
+            if (filePath) handleCreateFileSession(wsId, filePath)
           }}
           onClose={() => {
             setShowSessionTypePicker(false)
             setSessionTypePickerWsId(null)
-          }}
-        />
-      )}
-
-      {showFilePicker && filePickerWsId && (
-        <FilePickerModal
-          workspacePath={workspaces.find((w) => w.id === filePickerWsId)?.path || ''}
-          onSelect={(filePath) => {
-            setShowFilePicker(false)
-            if (changingFileSessionId) {
-              handleUpdateFileSession(changingFileSessionId, filePath)
-              setChangingFileSessionId(null)
-            } else {
-              handleCreateFileSession(filePickerWsId, filePath)
-            }
-            setFilePickerWsId(null)
-          }}
-          onClose={() => {
-            setShowFilePicker(false)
-            setFilePickerWsId(null)
-            setChangingFileSessionId(null)
           }}
         />
       )}

@@ -136,8 +136,17 @@ ipcMain.handle('claude:check', async () => {
 
 // ── Folder picker ──────────────────────────────────────────────────────────────
 
-ipcMain.handle('dialog:open-folder', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+ipcMain.handle('dialog:open-folder', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+// ── File picker ────────────────────────────────────────────────────────────────
+
+ipcMain.handle('dialog:open-file', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const result = await dialog.showOpenDialog(win, { properties: ['openFile'] })
   return result.canceled ? null : result.filePaths[0]
 })
 
@@ -252,6 +261,12 @@ ipcMain.handle('clipboard:save-image', async (_e, { buffer, ext }) => {
   } catch (err) {
     throw new Error(`Failed to save image: ${err.message}`)
   }
+})
+
+// ── File read ──────────────────────────────────────────────────────────────────
+
+ipcMain.handle('files:read', async (_e, { filePath }) => {
+  return fs.readFileSync(filePath, 'utf8')
 })
 
 // ── File list ──────────────────────────────────────────────────────────────────
