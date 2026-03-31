@@ -250,6 +250,33 @@ function RightPanel({
   const [commitMsg, setCommitMsg]   = useState('')
   const [committing, setCommitting] = useState(false)
   const [commitError, setCommitError] = useState<string | null>(null)
+  const [panelNotif, setPanelNotif] = useState<{ type: 'error' | 'conflict'; msg: string } | null>(null)
+
+  function parseGitError(err: unknown): { msg: string; isConflict: boolean } {
+    const raw = err instanceof Error ? err.message : String(err)
+    if (/CONFLICT|Automatic merge failed/i.test(raw))
+      return { msg: 'Merge conflict — resolve conflicts in the files below', isConflict: true }
+    if (/no upstream branch|no tracking information/i.test(raw))
+      return { msg: 'No upstream set — push with --set-upstream first', isConflict: false }
+    if (/fetch first|non-fast-forward/i.test(raw))
+      return { msg: 'Remote has new commits — pull first', isConflict: false }
+    if (/rejected/i.test(raw))
+      return { msg: 'Push rejected by remote', isConflict: false }
+    if (/Could not resolve|Connection refused|Permission denied.*publickey/i.test(raw))
+      return { msg: 'Network or SSH auth error', isConflict: false }
+    if (/local changes would be overwritten/i.test(raw))
+      return { msg: 'Stash or commit your changes first', isConflict: false }
+    if (/Please tell me who you are|user\.email|user\.name/i.test(raw))
+      return { msg: 'Git identity not configured — set user.name and user.email', isConflict: false }
+    if (/HEAD detached/i.test(raw))
+      return { msg: 'Cannot commit — HEAD is detached', isConflict: false }
+    if (/No local changes to save/i.test(raw))
+      return { msg: 'Nothing to stash', isConflict: false }
+    if (/nothing to commit/i.test(raw))
+      return { msg: 'Nothing to commit — working tree is clean', isConflict: false }
+    const firstLine = raw.split('\n').find(l => l.trim() && !/^hint:/i.test(l)) ?? raw
+    return { msg: firstLine.trim(), isConflict: false }
+  }
 
   useEffect(() => {
     if (!cwd) return
@@ -389,11 +416,11 @@ function RightPanel({
             title="Push"
             onClick={async () => {
               if (!cwd) return
-              try {
-                await window.api.gitPush(cwd)
-                refresh()
-              } catch (err) {
-                console.error('Push failed:', err)
+              setPanelNotif(null)
+              try { await window.api.gitPush(cwd); refresh() }
+              catch (err) {
+                const { msg, isConflict } = parseGitError(err)
+                setPanelNotif({ type: isConflict ? 'conflict' : 'error', msg })
               }
             }}
           >
@@ -404,11 +431,12 @@ function RightPanel({
             title="Pull"
             onClick={async () => {
               if (!cwd) return
-              try {
-                await window.api.gitPull(cwd)
-                refresh()
-              } catch (err) {
-                console.error('Pull failed:', err)
+              setPanelNotif(null)
+              try { await window.api.gitPull(cwd); refresh() }
+              catch (err) {
+                const { msg, isConflict } = parseGitError(err)
+                setPanelNotif({ type: isConflict ? 'conflict' : 'error', msg })
+                refresh() // refresh even on conflict so conflicted files appear in diff
               }
             }}
           >
@@ -419,11 +447,11 @@ function RightPanel({
             title="Fetch"
             onClick={async () => {
               if (!cwd) return
-              try {
-                await window.api.gitFetch(cwd)
-                refresh()
-              } catch (err) {
-                console.error('Fetch failed:', err)
+              setPanelNotif(null)
+              try { await window.api.gitFetch(cwd); refresh() }
+              catch (err) {
+                const { msg } = parseGitError(err)
+                setPanelNotif({ type: 'error', msg })
               }
             }}
           >
@@ -435,17 +463,36 @@ function RightPanel({
               title="Stash changes"
               onClick={async () => {
                 if (!cwd) return
-                try {
-                  await window.api.gitStash(cwd, 'save')
-                  refresh()
-                } catch (err) {
-                  console.error('Stash failed:', err)
+                setPanelNotif(null)
+                try { await window.api.gitStash(cwd, 'save'); refresh() }
+                catch (err) {
+                  const { msg, isConflict } = parseGitError(err)
+                  setPanelNotif({ type: isConflict ? 'conflict' : 'error', msg })
                 }
               }}
             >
               Stash
             </button>
           )}
+        </div>
+      )}
+
+      {/* Panel notification strip */}
+      {panelNotif && (
+        <div className={`flex items-start gap-2 px-2 py-[5px] border-b border-[#2a2a2a] flex-shrink-0 ${
+          panelNotif.type === 'conflict' ? 'bg-[#2D1F0A]' : 'bg-[#1A0A0A]'
+        }`}>
+          <span className={`text-[10px] leading-snug flex-1 ${
+            panelNotif.type === 'conflict' ? 'text-[#F59E0B]' : 'text-[#F87171]'
+          }`}>
+            {panelNotif.msg}
+          </span>
+          <button
+            className="text-tm-dim hover:text-tm-muted flex-shrink-0 text-[13px] leading-none mt-[1px]"
+            onClick={() => setPanelNotif(null)}
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -463,7 +510,7 @@ function RightPanel({
                   e.preventDefault()
                   setCommitting(true); setCommitError(null)
                   try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
-                  catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
+                  catch (err) { setCommitError(parseGitError(err).msg) }
                   finally { setCommitting(false) }
                 }
               }}
@@ -475,7 +522,7 @@ function RightPanel({
                 if (!cwd || !commitMsg.trim() || committing) return
                 setCommitting(true); setCommitError(null)
                 try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
-                catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
+                catch (err) { setCommitError(parseGitError(err).msg) }
                 finally { setCommitting(false) }
               }}
             >
