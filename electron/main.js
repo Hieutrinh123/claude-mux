@@ -44,19 +44,22 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Force-remove a worktree directory, falling back to fs.rmSync on Windows permission errors
+// Force-remove a worktree directory — always cleans up both git metadata and the directory
 function forceRemoveWorktree(worktreePath, cwd) {
   const { execFileSync } = require('child_process')
+  // Remove git metadata (de-register worktree)
   try {
     execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], { cwd, encoding: 'utf8' })
   } catch {
-    // Fallback: delete the directory directly then prune git's metadata
-    try {
+    try { execFileSync('git', ['worktree', 'prune'], { cwd, encoding: 'utf8' }) } catch {}
+  }
+  // Always delete the directory — git worktree remove may leave it on Windows when PTY holds handles
+  try {
+    if (fs.existsSync(worktreePath)) {
       fs.rmSync(worktreePath, { recursive: true, force: true })
-      execFileSync('git', ['worktree', 'prune'], { cwd, encoding: 'utf8' })
-    } catch (err2) {
-      console.error('Failed to force-remove worktree:', worktreePath, err2.message)
     }
+  } catch (err) {
+    console.error('Failed to rmSync worktree dir:', worktreePath, err.message)
   }
 }
 
@@ -475,6 +478,10 @@ ipcMain.handle('git:worktree:create', async (_e, { sessionId, workspaceId, works
 })
 
 ipcMain.handle('git:worktree:delete', async (_e, { sessionId, workspacePath }) => {
+  // Kill PTY first so it releases file handles on the worktree directory
+  const proc = ptySessions.get(sessionId)
+  if (proc) { try { proc.kill() } catch {} ; ptySessions.delete(sessionId) }
+
   const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
   forceRemoveWorktree(worktreePath, workspacePath)
   removeSessionMapping(workspacePath, sessionId)
@@ -513,7 +520,9 @@ ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, worksp
               return
             }
 
-            // Delete worktree (Windows-safe fallback)
+            // Kill PTY first, then delete worktree
+            const proc = ptySessions.get(sessionId)
+            if (proc) { try { proc.kill() } catch {} ; ptySessions.delete(sessionId) }
             forceRemoveWorktree(worktreePath, workspacePath)
 
             // Delete branch
