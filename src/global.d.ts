@@ -9,7 +9,7 @@ interface Window {
     onPtyError: (sessionId: string, cb: (msg: string) => void) => () => void
     claudeCheck: () => Promise<string>
     openFolder:  () => Promise<string | null>
-    openFile:    () => Promise<string | null>
+    openFile:    (defaultPath?: string) => Promise<string | null>
     gitStatus:   (cwd: string, file?: string, commitHash?: string) => Promise<{
       files:     { path: string; status: string }[]
       commits:   { hash: string; fullHash: string; parents: string[]; refs: string[]; message: string; date: string; isoDate: string; author: string }[]

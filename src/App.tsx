@@ -1117,7 +1117,8 @@ export default function App() {
             const wsId = sessionTypePickerWsId
             setShowSessionTypePicker(false)
             setSessionTypePickerWsId(null)
-            const filePath = await window.api.openFile()
+            const wsPath = workspaces.find(w => w.id === wsId)?.path
+            const filePath = await window.api.openFile(wsPath)
             if (filePath) handleCreateFileSession(wsId, filePath)
           }}
           onClose={() => {

@@ -144,9 +144,9 @@ ipcMain.handle('dialog:open-folder', async (event) => {
 
 // ── File picker ────────────────────────────────────────────────────────────────
 
-ipcMain.handle('dialog:open-file', async (event) => {
+ipcMain.handle('dialog:open-file', async (event, { defaultPath } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  const result = await dialog.showOpenDialog(win, { properties: ['openFile'] })
+  const result = await dialog.showOpenDialog(win, { properties: ['openFile'], defaultPath })
   return result.canceled ? null : result.filePaths[0]
 })
 
