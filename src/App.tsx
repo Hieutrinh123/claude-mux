@@ -700,23 +700,21 @@ export default function App() {
   }
 
   function handleUpdateFileSession(sessionId: string, filePath: string) {
+    const session = sessions.find((s) => s.id === sessionId)
+    if (!session || session.type !== 'file-viewer') return
+
     const fileName = filePath.split(/[\\/]/).pop() || 'file'
-    setSessions((prev) => prev.map((s) => {
-      if (s.id === sessionId && s.type === 'file-viewer') {
-        return { ...s, name: fileName, filePath }
-      }
-      return s
-    }))
+    const updatedSession: Session = { ...session, name: fileName, filePath }
+
+    setSessions((prev) => prev.map((s) => s.id === sessionId ? updatedSession : s))
 
     // Kill the old PTY and spawn a new one with the new file
     window.api.ptyKill(sessionId)
     spawnedSessions.current.delete(sessionId)
     clearBuffer(sessionId)
 
-    const session = sessions.find((s) => s.id === sessionId)
-    const workspace = workspaces.find((w) => w.id === session?.workspaceId)
-    if (session && workspace) {
-      const updatedSession = { ...session, filePath, name: fileName } as Session
+    const workspace = workspaces.find((w) => w.id === session.workspaceId)
+    if (workspace) {
       spawnSession(updatedSession, workspace)
     }
   }
