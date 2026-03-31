@@ -249,6 +249,7 @@ function RightPanel({
   const [branchStatus, setBranchStatus] = useState<{ name: string; ahead: number; behind: number; hasUncommitted: boolean; hasUntracked: boolean } | null>(null)
   const [commitMsg, setCommitMsg]   = useState('')
   const [committing, setCommitting] = useState(false)
+  const [commitError, setCommitError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!cwd) return
@@ -450,35 +451,40 @@ function RightPanel({
 
       {/* Commit row */}
       {branchStatus && (branchStatus.hasUncommitted || branchStatus.hasUntracked) && (
-        <div className="flex items-center gap-[6px] px-2 py-[6px] border-b border-[#2a2a2a] bg-[#0D0D0D] flex-shrink-0">
-          <input
-            className="flex-1 h-6 px-2 rounded border border-[#2a2a2a] bg-[#111] text-[11px] text-tm-text placeholder-tm-dim focus:outline-none focus:border-[#444]"
-            placeholder="Commit message…"
-            value={commitMsg}
-            onChange={(e) => setCommitMsg(e.target.value)}
-            onKeyDown={async (e) => {
-              if (e.key === 'Enter' && commitMsg.trim() && !committing && cwd) {
-                e.preventDefault()
-                setCommitting(true)
+        <div className="flex flex-col gap-[4px] px-2 py-[6px] border-b border-[#2a2a2a] bg-[#0D0D0D] flex-shrink-0">
+          <div className="flex items-center gap-[6px]">
+            <input
+              className="flex-1 h-6 px-2 rounded border border-[#2a2a2a] bg-[#111] text-[11px] text-tm-text placeholder-tm-dim focus:outline-none focus:border-[#444]"
+              placeholder="Commit message…"
+              value={commitMsg}
+              onChange={(e) => { setCommitMsg(e.target.value); setCommitError(null) }}
+              onKeyDown={async (e) => {
+                if (e.key === 'Enter' && commitMsg.trim() && !committing && cwd) {
+                  e.preventDefault()
+                  setCommitting(true); setCommitError(null)
+                  try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
+                  catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
+                  finally { setCommitting(false) }
+                }
+              }}
+            />
+            <button
+              className="flex items-center px-2 h-6 rounded border border-tm-green bg-tm-green/10 text-[11px] text-tm-green hover:bg-tm-green/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={!commitMsg.trim() || committing}
+              onClick={async () => {
+                if (!cwd || !commitMsg.trim() || committing) return
+                setCommitting(true); setCommitError(null)
                 try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
-                catch (err) { console.error('Commit failed:', err) }
+                catch (err) { setCommitError(err instanceof Error ? err.message : 'Commit failed') }
                 finally { setCommitting(false) }
-              }
-            }}
-          />
-          <button
-            className="flex items-center px-2 h-6 rounded border border-tm-green bg-tm-green/10 text-[11px] text-tm-green hover:bg-tm-green/20 disabled:opacity-40 disabled:cursor-not-allowed"
-            disabled={!commitMsg.trim() || committing}
-            onClick={async () => {
-              if (!cwd || !commitMsg.trim() || committing) return
-              setCommitting(true)
-              try { await window.api.gitCommit(cwd, commitMsg.trim()); setCommitMsg(''); refresh() }
-              catch (err) { console.error('Commit failed:', err) }
-              finally { setCommitting(false) }
-            }}
-          >
-            {committing ? '…' : 'Commit'}
-          </button>
+              }}
+            >
+              {committing ? '…' : 'Commit'}
+            </button>
+          </div>
+          {commitError && (
+            <span className="text-[10px] text-[#F87171] leading-tight">{commitError}</span>
+          )}
         </div>
       )}
 
