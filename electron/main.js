@@ -341,13 +341,93 @@ ipcMain.handle('files:list', async (_e, { cwd }) => {
 
 // ── Git Worktree ───────────────────────────────────────────────────────────────
 
+// Session number management
+function getNextSessionNumber(workspacePath) {
+  const counterFile = path.join(workspacePath, '.claude-worktrees', '.session-counter')
+
+  try {
+    // Ensure directory exists
+    const worktreesDir = path.join(workspacePath, '.claude-worktrees')
+    if (!fs.existsSync(worktreesDir)) {
+      fs.mkdirSync(worktreesDir, { recursive: true })
+    }
+
+    // Read current counter
+    let counter = 1
+    if (fs.existsSync(counterFile)) {
+      const content = fs.readFileSync(counterFile, 'utf8').trim()
+      counter = parseInt(content) || 1
+    }
+
+    // Increment and save
+    const nextCounter = counter + 1
+    fs.writeFileSync(counterFile, String(nextCounter), 'utf8')
+
+    return counter
+  } catch (err) {
+    console.error('Failed to get session number:', err)
+    return Date.now() // Fallback to timestamp
+  }
+}
+
+function saveSessionMapping(workspacePath, sessionId, sessionNumber) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    let mappings = {}
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      mappings = JSON.parse(content)
+    }
+
+    mappings[sessionId] = sessionNumber
+    fs.writeFileSync(mappingFile, JSON.stringify(mappings, null, 2), 'utf8')
+  } catch (err) {
+    console.error('Failed to save session mapping:', err)
+  }
+}
+
+function getSessionNumber(workspacePath, sessionId) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      const mappings = JSON.parse(content)
+      return mappings[sessionId]
+    }
+  } catch (err) {
+    console.error('Failed to read session mapping:', err)
+  }
+
+  return null
+}
+
+function removeSessionMapping(workspacePath, sessionId) {
+  const mappingFile = path.join(workspacePath, '.claude-worktrees', '.session-mapping.json')
+
+  try {
+    if (fs.existsSync(mappingFile)) {
+      const content = fs.readFileSync(mappingFile, 'utf8')
+      const mappings = JSON.parse(content)
+      delete mappings[sessionId]
+      fs.writeFileSync(mappingFile, JSON.stringify(mappings, null, 2), 'utf8')
+    }
+  } catch (err) {
+    console.error('Failed to remove session mapping:', err)
+  }
+}
+
 ipcMain.handle('git:worktree:create', async (_e, { sessionId, workspaceId, workspacePath }) => {
   const { execFile } = require('child_process')
 
   return new Promise((resolve, reject) => {
     const worktreesDir = path.join(workspacePath, '.claude-worktrees')
     const worktreePath = path.join(worktreesDir, `session_${sessionId}`)
-    const branchName = `claude-session/${workspaceId}/${sessionId}`
+
+    // Use simplified session numbering
+    const sessionNumber = getNextSessionNumber(workspacePath)
+    const branchName = `claude-session/${sessionNumber}`
 
     // Create .claude-worktrees directory if it doesn't exist
     if (!fs.existsSync(worktreesDir)) {
@@ -374,6 +454,8 @@ ipcMain.handle('git:worktree:create', async (_e, { sessionId, workspaceId, works
                 if (err) {
                   reject(new Error(`Failed to create worktree: ${stderr || err.message}`))
                 } else {
+                  // Save session mapping for later lookup
+                  saveSessionMapping(workspacePath, sessionId, sessionNumber)
                   resolve({ worktreePath, branchName })
                 }
               }
@@ -398,6 +480,8 @@ ipcMain.handle('git:worktree:delete', async (_e, { sessionId, workspacePath }) =
         if (err) {
           reject(new Error(`Failed to delete worktree: ${stderr || err.message}`))
         } else {
+          // Clean up session mapping
+          removeSessionMapping(workspacePath, sessionId)
           resolve({ success: true })
         }
       }
@@ -409,7 +493,14 @@ ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, worksp
   const { execFile } = require('child_process')
 
   return new Promise((resolve, reject) => {
-    const branchName = `claude-session/${workspaceId}/${sessionId}`
+    // Look up the session number from mapping
+    const sessionNumber = getSessionNumber(workspacePath, sessionId)
+    if (!sessionNumber) {
+      reject(new Error(`Session ${sessionId} not found in mapping`))
+      return
+    }
+
+    const branchName = `claude-session/${sessionNumber}`
     const worktreePath = path.join(workspacePath, '.claude-worktrees', `session_${sessionId}`)
 
     // Switch to target branch
@@ -445,6 +536,8 @@ ipcMain.handle('git:worktree:merge', async (_e, { sessionId, workspaceId, worksp
                     if (err4) {
                       console.error('Failed to delete branch after merge:', err4)
                     }
+                    // Clean up session mapping
+                    removeSessionMapping(workspacePath, sessionId)
                     resolve({ success: true })
                   }
                 )
